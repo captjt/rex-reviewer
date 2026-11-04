@@ -12,6 +12,9 @@ final class Store {
     private(set) var state = PipelineState()
     private(set) var watcher: WatcherInfo?
     private(set) var roundStatus: [String: String] = [:]
+    /// How PRs ended, from the merged and closed events, for entries that
+    /// predate the outcome field.
+    private(set) var endedEvents: [String: Ending] = [:]
     private(set) var watcherRunning = true
     private(set) var pending: Set<String> = []
     private(set) var checkRequestedAt: Date?
@@ -63,6 +66,19 @@ final class Store {
         if newState != state { state = newState }
         let newWatcher = load(Paths.stateDir + "/watcher.json", as: WatcherInfo.self)
         if newWatcher != watcher { watcher = newWatcher }
+
+        struct Event: Decodable { let kind: String; let repo: String?; let pr: Int?; let at: String? }
+        var ends: [String: Ending] = [:]
+        if let data = fm.contents(atPath: Paths.stateDir + "/events.jsonl") {
+            for line in String(decoding: data, as: UTF8.self).split(separator: "\n")
+            where line.contains("\"merged\"") || line.contains("\"closed\"") {
+                guard let ev = try? decoder.decode(Event.self, from: Data(line.utf8)),
+                      ev.kind == "merged" || ev.kind == "closed",
+                      let repo = ev.repo, let pr = ev.pr, let at = ev.at?.isoDate else { continue }
+                ends["\(repo)#\(pr)"] = Ending(outcome: ev.kind, at: at)
+            }
+        }
+        if ends != endedEvents { endedEvents = ends }
 
         var status: [String: String] = [:]
         for e in list where e.state == "reviewing" {
@@ -159,6 +175,17 @@ final class Store {
                 .sorted { ($0.postedAt ?? "") > ($1.postedAt ?? "") }
                 .prefix(12)
         )
+    }
+
+    func ending(of e: Entry) -> Ending? {
+        if let outcome = e.outcome, let at = e.endedAt?.isoDate {
+            return Ending(outcome: outcome, at: at)
+        }
+        return endedEvents[e.id]
+    }
+
+    func recap(_ range: RecapRange, now: Date = Date()) -> Recap {
+        Recap(range: range, entries: entries, endings: { self.ending(of: $0) }, now: now)
     }
 
     func entry(_ repo: String, _ pr: Int) -> Entry? {

@@ -28,6 +28,7 @@ function M.decide(e, o, now)
       return nil, evs
     end
     e = { repo = o.repo, pr = o.pr, round = 0, state = "queued", trigger = "request", history = {}, created_at = now }
+    e.requested_at = o.requested_at or now
     emit("requested", { round = 1, head = o.head, author = o.author, title = o.title })
   end
 
@@ -39,6 +40,9 @@ function M.decide(e, o, now)
     local s = o.state == "MERGED" and "merged" or "closed"
     if e.state ~= s and not M.TERMINAL[e.state] then
       e.state = s
+      -- outcome and ended_at outlast cleanup, which sets state to "cleaned".
+      e.outcome = s
+      e.ended_at = now
       emit(s, { head = o.head })
     end
   elseif e.state == "posted" then
@@ -48,6 +52,7 @@ function M.decide(e, o, now)
     if o.requested and newer then
       e.state = "queued"
       e.trigger = "re-request"
+      e.requested_at = o.requested_at or now
       emit("re-requested", { round = e.round + 1, head = o.head, reviewed_head = e.reviewed_head })
     elseif o.head and e.head and o.head ~= e.head then
       emit("new-head", { head = o.head, previous_head = e.head, note = "waiting for a re-request" })
@@ -58,6 +63,7 @@ function M.decide(e, o, now)
     emit("unrequested", { head = o.head })
   elseif e.state == "unrequested" and o.requested then
     e.state = "queued"
+    e.requested_at = o.requested_at or now
     emit("requested", { round = e.round + 1, head = o.head })
   elseif e.state == "reviewing" and o.head and e.round_head and o.head ~= e.round_head and o.head ~= e.head then
     emit("head-moved", { round = e.round, head = o.head, round_head = e.round_head })
@@ -77,7 +83,9 @@ function M.mark_started(e, head, now)
 end
 
 -- A round ended: a review was posted on head, or you dismissed it. by is
--- "agents" for this tool's rounds and "you" for your own review.
+-- "agents" for this tool's rounds and "you" for your own review. The history
+-- record is what the recap reads, so it keeps the round's timing, findings,
+-- and merge risk after the worktree is gone.
 function M.mark_posted(e, fields, now)
   e.state = "posted"
   e.reviewed_head = fields.head or e.round_head
@@ -86,15 +94,22 @@ function M.mark_posted(e, fields, now)
   e.verdict = fields.verdict
   e.review_id = fields.review_id
   e.review_url = fields.url
-  e.history = e.history or {}
+  -- Lua writes an empty history as {}, which reads back as a table either way.
+  e.history = type(e.history) == "table" and e.history or {}
   e.history[#e.history + 1] = {
     round = e.round,
     trigger = e.trigger,
     head = e.reviewed_head,
     verdict = fields.verdict,
     review_id = fields.review_id,
+    url = fields.url,
     by = fields.by or "agents",
+    requested_at = e.requested_at,
+    started_at = e.started_at,
     at = now,
+    blocking = fields.blocking,
+    non_blocking = fields.non_blocking,
+    merge_risk = fields.merge_risk,
   }
   return e
 end

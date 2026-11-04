@@ -1,20 +1,34 @@
 import AppKit
 import SwiftUI
 
+enum PanelTab: String, CaseIterable, Identifiable {
+    case now = "Now"
+    case recap = "Recap"
+
+    var id: Self { self }
+}
+
 struct PanelView: View {
     let store: Store
+    @AppStorage("panelTab") private var tab: PanelTab = .now
+    @AppStorage("recapRange") private var range: RecapRange = .week
     @State private var listHeight: CGFloat = 0
 
     var body: some View {
         // Relative times refresh every 30 seconds.
         TimelineView(.periodic(from: .now, by: 30)) { context in
             VStack(spacing: 0) {
-                HeaderView(store: store, now: context.date)
+                HeaderView(store: store, now: context.date, tab: $tab, range: $range)
                 Divider()
                 ScrollView {
-                    SectionsView(store: store, now: context.date)
-                        .padding(.vertical, 6)
-                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { listHeight = $0 }
+                    Group {
+                        switch tab {
+                        case .now: SectionsView(store: store, now: context.date)
+                        case .recap: RecapView(store: store, range: range, now: context.date)
+                        }
+                    }
+                    .padding(.vertical, 6)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { listHeight = $0 }
                 }
                 .scrollBounceBehavior(.basedOnSize)
                 .frame(height: min(max(listHeight, 60), 520))
@@ -55,28 +69,50 @@ struct PanelView: View {
 struct HeaderView: View {
     let store: Store
     let now: Date
+    @Binding var tab: PanelTab
+    @Binding var range: RecapRange
 
     var body: some View {
         let status = store.watcherStatus
-        HStack(alignment: .firstTextBaseline) {
-            Text("Rex Reviewer").font(.headline)
-            Spacer()
-            Button {
-                store.show(nil)
-            } label: {
-                HStack(spacing: 5) {
-                    Circle().fill(color(status)).frame(width: 7, height: 7)
-                    Text(label(status))
-                    if let scanned = store.state.lastScanAt?.isoDate, status != .stopped, status != .down {
-                        Text("· checked \(Format.ago(scanned, now: now))")
-                    }
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center) {
+                Text("Rex Reviewer").font(.headline)
+                Spacer()
+                Picker("View", selection: $tab) {
+                    ForEach(PanelTab.allCases) { Text($0.rawValue).tag($0) }
                 }
-                .font(.callout)
-                .foregroundStyle(.secondary)
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .fixedSize()
             }
-            .buttonStyle(.plain)
-            .disabled(status == .stopped || status == .down)
-            .help("Show the watcher in Rex")
+            switch tab {
+            case .now:
+                Button {
+                    store.show(nil)
+                } label: {
+                    HStack(spacing: 5) {
+                        Circle().fill(color(status)).frame(width: 7, height: 7)
+                        Text(label(status))
+                        if let scanned = store.state.lastScanAt?.isoDate, status != .stopped, status != .down {
+                            Text("· checked \(Format.ago(scanned, now: now))")
+                        }
+                    }
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .disabled(status == .stopped || status == .down)
+                .help("Show the watcher in Rex")
+            case .recap:
+                Picker("Range", selection: $range) {
+                    ForEach(RecapRange.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .frame(maxWidth: .infinity)
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)

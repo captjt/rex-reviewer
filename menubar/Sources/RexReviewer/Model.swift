@@ -26,22 +26,72 @@ struct Entry: Decodable, Identifiable, Equatable, Sendable {
     var startedAt: String?
     var postedAt: String?
     var startError: String?
+    var outcome: String?
+    var endedAt: String?
+    var requestedAt: String?
+    var additions: Int?
+    var deletions: Int?
+    var history: LenientList<Round>?
 
     var id: String { "\(repo)#\(pr)" }
     var repoName: String { repo.split(separator: "/").last.map(String.init) ?? repo }
     var actionArgs: [String] { ["pr=\(pr)", "repo=\(repo)"] }
+    var rounds: [Round] { history?.items ?? [] }
 
     enum CodingKeys: String, CodingKey {
-        case repo, pr, title, author, url, state, phase, round, trigger, verdict, worktree
+        case repo, pr, title, author, url, state, phase, round, trigger, verdict, worktree, outcome
+        case additions, deletions, history
         case mergeRisk = "merge_risk"
         case reviewURL = "review_url"
         case startedAt = "started_at"
         case postedAt = "posted_at"
         case startError = "start_error"
+        case endedAt = "ended_at"
+        case requestedAt = "requested_at"
     }
 
     /// Merged or closed, and cleaned up.
     var isFinished: Bool { ["cleaned", "merged", "closed"].contains(state ?? "") }
+}
+
+/// One finished round, from an entry's history.
+struct Round: Decodable, Equatable, Sendable {
+    var round: Int?
+    var verdict: String?
+    var by: String?
+    var at: String?
+    var url: String?
+    var requestedAt: String?
+    var startedAt: String?
+    var blocking: Int?
+    var nonBlocking: Int?
+    var mergeRisk: String?
+
+    enum CodingKeys: String, CodingKey {
+        case round, verdict, by, at, url, blocking
+        case requestedAt = "requested_at"
+        case startedAt = "started_at"
+        case nonBlocking = "non_blocking"
+        case mergeRisk = "merge_risk"
+    }
+
+    /// A review the agents posted, rather than a dismissal or your own review.
+    var isPosted: Bool { by == "agents" || by == "codex" }
+}
+
+/// A JSON list that Lua may have written as {} when it was empty.
+struct LenientList<T: Decodable & Equatable & Sendable>: Decodable, Equatable, Sendable {
+    var items: [T]
+
+    init(from decoder: any Decoder) throws {
+        items = (try? decoder.singleValueContainer().decode([T].self)) ?? []
+    }
+}
+
+/// How a PR ended, from an entry or, for older entries, events.jsonl.
+struct Ending: Equatable, Sendable {
+    let outcome: String
+    let at: Date
 }
 
 /// state.json.
@@ -113,5 +163,14 @@ enum Format {
     static func ago(_ date: Date, now: Date) -> String {
         let s = short(since: date, now: now)
         return s == "now" ? "just now" : s + " ago"
+    }
+
+    /// "25m", "1h 40m", "2d 3h".
+    static func duration(_ seconds: TimeInterval) -> String {
+        let m = max(0, Int(seconds / 60))
+        if m < 60 { return "\(max(m, 1))m" }
+        let h = m / 60
+        if h < 24 { return m % 60 == 0 ? "\(h)h" : "\(h)h \(m % 60)m" }
+        return h % 24 == 0 ? "\(h / 24)d" : "\(h / 24)d \(h % 24)h"
     }
 }

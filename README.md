@@ -159,11 +159,22 @@ add an adapter to [`lua/rex_reviewer/agents.lua`](lua/rex_reviewer/agents.lua).
 
 ## Day to day
 
-The menu bar app shows what needs you, reviews ready to post, rounds in
-progress, the queue, and the last week of reviews. You can pause, check
-GitHub now, and stop or start the watcher from it. Clicking a round shows its
-tab in Rex. That needs Rex's Remote Control setting (Settings, Rex Server);
-without it, the app says so.
+The menu bar app has two tabs.
+
+- **Now** shows what needs you, reviews ready to post, rounds in progress,
+  the queue, and the last week of reviews. You can pause, check GitHub now,
+  and stop or start the watcher from it. Clicking a round shows its tab in
+  Rex. That needs Rex's Remote Control setting (Settings, Rex Server);
+  without it, the app says so.
+- **Recap** sums up today, this week, or the last 30 days:
+  - reviews posted, with a per-day sparkline and the change from the period
+    before;
+  - approvals, changes requested, PRs merged, and the median time from a
+    request to its review;
+  - the PRs that merged (with each round's verdict, such as ✕ → ✓), those
+    still waiting on their authors, and those closed without merging.
+
+  **Copy as Markdown** turns it into a standup or weekly note.
 
 The same things work from a shell:
 

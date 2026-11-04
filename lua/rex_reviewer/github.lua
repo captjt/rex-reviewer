@@ -127,7 +127,7 @@ function M.fetch_context(repo, pr, ctx)
   local n = tostring(pr)
   gh_to(ctx .. "/pr.json", {
     "gh", "pr", "view", n, "-R", repo, "--json",
-    "number,title,body,author,url,baseRefName,headRefName,headRefOid,isDraft,labels,files,commits",
+    "number,title,body,author,url,baseRefName,headRefName,headRefOid,isDraft,labels,files,commits,additions,deletions,changedFiles",
   })
   gh_to(ctx .. "/pr.diff", { "gh", "pr", "diff", n, "-R", repo })
   gh_to(ctx .. "/reviews.json", { "gh", "api", "--paginate", string.format("repos/%s/pulls/%d/reviews", repo, pr) })

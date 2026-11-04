@@ -169,6 +169,7 @@ function M.pickup(repo, pr)
   e = e or { repo = repo, pr = pr, round = 0, history = {}, created_at = now }
   e.state = "queued"
   e.trigger = "manual"
+  e.requested_at = now
   e.head = p.headRefOid
   e.title = p.title
   e.url = p.url
@@ -204,6 +205,7 @@ function M.prep(repo, pr)
   util.mkdirp(ctx)
   local p = github.fetch_context(repo, pr, ctx)
   e.base = p.baseRefName or e.base or "main"
+  e.additions, e.deletions, e.changed_files = p.additions, p.deletions, p.changedFiles
 
   local delta
   if round > 1 then
@@ -478,7 +480,18 @@ function M.post(repo, pr, opts)
     return { dry_run = true, preview = res.stdout, preview_path = out .. "/preview.md" }
   end
   local posted = util.decode(res.stdout) or {}
-  rules.mark_posted(e, { head = e.round_head, verdict = posted.state, review_id = posted.review_id, url = posted.url }, util.now())
+  local blocking, non_blocking = 0, 0
+  for _, f in ipairs((util.decode(util.read_file(draft)) or {}).findings or {}) do
+    if f.severity == "blocking" then
+      blocking = blocking + 1
+    else
+      non_blocking = non_blocking + 1
+    end
+  end
+  rules.mark_posted(e, {
+    head = e.round_head, verdict = posted.state, review_id = posted.review_id, url = posted.url,
+    blocking = blocking, non_blocking = non_blocking, merge_risk = posted.merge_risk,
+  }, util.now())
   e.merge_risk = posted.merge_risk
   ledger.save(e)
   M.set_status(e, "POSTED " .. (posted.url or ""))

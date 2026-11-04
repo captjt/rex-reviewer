@@ -77,12 +77,24 @@ One entry per PR the tool has seen.
 | `verdict` | the last round's outcome: `APPROVED`, `CHANGES_REQUESTED`, or `DISMISSED` |
 | `merge_risk` | `low`, `medium`, or `high`, when assessed |
 | `review_url` | the posted review |
+| `outcome` | `merged` or `closed` once the PR ends; it stays after cleanup |
+| `ended_at` | when the watcher saw it merged or closed |
+| `requested_at` | when the current or last round was requested (or picked up) |
+| `additions`, `deletions`, `changed_files` | the PR's size at the last prep |
 | `started_at`, `posted_at`, `cleaned_at`, `created_at`, `updated_at` | times |
 | `worktree` | the PR's worktree; `.tmp/status.txt` in it is the round's status |
 | `session_id`, `pane`, `checker_pane` | the Rex session and the agents' pane names |
 | `reviewer`, `reviewer_session`, `checker_session` | which agent reviewed, and the agents' session IDs |
 | `start_error` | why the last start failed |
-| `history` | one record per finished round: `{round, trigger, head, verdict, review_id, by, at}` |
+| `history` | one record per finished round, below |
+
+Each `history` record: `round`, `trigger`, `head`, `verdict`, `review_id`,
+`url`, `by` (`agents`, or `you` for a dismissal or your own review),
+`requested_at`, `started_at`, `at` (when it posted or was dismissed),
+`blocking` and `non_blocking` (finding counts), and `merge_risk`. Records
+written before 0.2 have only the first six and `at`. The menu bar app's recap
+reads these records, with the `merged` and `closed` events in `events.jsonl`
+for entries that predate `outcome`.
 
 ### The round's status
 
