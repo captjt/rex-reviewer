@@ -73,7 +73,7 @@ rex config reload
 rex-reviewer doctor          # checks the config, the tools, and each repo's checkout
 rex-reviewer up              # starts the rex-reviewer session and its watcher
 rex-reviewer launch-agent    # optional: start it at login, and repair it every 5 minutes
-rex-reviewer app             # optional: build and open the menu bar app
+rex-reviewer app --login     # optional: build the menu bar app, and open it at login
 ```
 
 ## Configure
