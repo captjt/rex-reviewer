@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# rex-reviewer: set up rex-reviewer, and run its actions from a shell.
+set -euo pipefail
+
+# The checkout this script lives in, following symlinks.
+src=${BASH_SOURCE[0]}
+while [[ -L $src ]]; do
+	dir=$(cd -P "$(dirname "$src")" && pwd)
+	src=$(readlink "$src")
+	[[ $src == /* ]] || src=$dir/$src
+done
+root=$(cd -P "$(dirname "$src")/.." && pwd)
+
+config_dir="$HOME/.config/rex-reviewer"
+agent_label="io.github.captjt.rex-reviewer"
+agent_plist="$HOME/Library/LaunchAgents/$agent_label.plist"
+
+usage() {
+	cat <<EOF
+rex-reviewer: agent PR reviews in Rex.
+
+Setup:
+  rex-reviewer setup           create the config, and show the line for Rex's init.lua
+  rex-reviewer doctor          check the config, the tools, and the repos
+  rex-reviewer launch-agent    keep the watcher running: start it at login and
+                               repair it every 5 minutes (--remove to undo)
+  rex-reviewer app             build and open the menu bar app
+
+The watcher:
+  rex-reviewer up | down       start or stop it
+  rex-reviewer pause | resume  stop or resume starting new rounds
+  rex-reviewer check           check GitHub now
+  rex-reviewer status          every PR it knows about
+
+A round (add a repo as owner/name when more than one is configured):
+  rex-reviewer preview PR [REPO]   render the checked review
+  rex-reviewer post PR [REPO]      post it
+  rex-reviewer dismiss PR [REPO]   end the round without posting
+  rex-reviewer focus PR [REPO]     show its tab in the Rex app
+  rex-reviewer pickup PR [REPO]    review a PR that didn't request you
+  rex-reviewer replay PR [REPO]    what the rules would have done on its history
+  rex-reviewer start PR [REPO]     start its next round now (after reviewer_prep)
+
+The checkout: $root
+EOF
+}
+
+die() {
+	printf 'rex-reviewer: %s\n' "$*" >&2
+	exit 1
+}
+
+need_rex() {
+	command -v rex >/dev/null || die "rex isn't on PATH. Install Rex, or add its CLI to PATH."
+}
+
+# Sets args to pr=N, and repo=owner/name when given.
+pr_args() {
+	[[ ${1:-} =~ ^[0-9]+$ ]] || die "give a PR number"
+	args=("pr=$1")
+	[[ -z ${2:-} ]] || args+=("repo=$2")
+}
+
+act() {
+	need_rex
+	rex 'do' "$@"
+}
+
+setup() {
+	mkdir -p "$config_dir/briefs"
+	if [[ -f $config_dir/config.lua ]]; then
+		echo "config: $config_dir/config.lua (kept)"
+	else
+		cp "$root/examples/config.lua" "$config_dir/config.lua"
+		echo "config: created $config_dir/config.lua from the example. Add your repos to it."
+	fi
+	local line="dofile(\"$root/init.lua\")"
+	local init="$HOME/.config/rex/init.lua"
+	if [[ -f $init ]] && grep -qF "$root/init.lua" "$init"; then
+		echo "init.lua: already loads rex-reviewer"
+	else
+		echo
+		echo "Add this line to $init, then run: rex config reload"
+		echo
+		echo "  $line"
+	fi
+	echo
+	echo "Then: rex-reviewer doctor, and rex-reviewer up."
+}
+
+doctor() {
+	need_rex
+	local out
+	out=$(rex 'do' reviewer_doctor --json) || die "reviewer_doctor failed. Is rex-reviewer loaded from init.lua? Run rex-reviewer setup."
+	jq -r '.checks[] | (if .ok then "ok   " else "FAIL " end) + .check + ": " + (.detail // "")' <<<"$out"
+	jq -e .ok <<<"$out" >/dev/null
+}
+
+launch_agent() {
+	if [[ ${1:-} == --remove ]]; then
+		launchctl bootout "gui/$(id -u)/$agent_label" 2>/dev/null || true
+		rm -f "$agent_plist"
+		echo "removed $agent_plist"
+		return
+	fi
+	need_rex
+	local rex_bin
+	rex_bin=$(command -v rex)
+	mkdir -p "$(dirname "$agent_plist")" "$HOME/Library/Logs"
+	cat >"$agent_plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$agent_label</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$rex_bin</string>
+    <string>do</string>
+    <string>reviewer_up</string>
+    <string>auto=true</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <key>StandardOutPath</key>
+  <string>$HOME/Library/Logs/rex-reviewer.log</string>
+  <key>StandardErrorPath</key>
+  <string>$HOME/Library/Logs/rex-reviewer.log</string>
+</dict>
+</plist>
+EOF
+	launchctl bootout "gui/$(id -u)/$agent_label" 2>/dev/null || true
+	launchctl bootstrap "gui/$(id -u)" "$agent_plist"
+	echo "installed $agent_plist: reviewer_up at login and every 5 minutes"
+}
+
+cmd=${1:-help}
+shift || true
+case $cmd in
+setup) setup ;;
+doctor) doctor ;;
+launch-agent) launch_agent "$@" ;;
+app) "$root/menubar/build.sh" ;;
+up) act reviewer_up ;;
+down) act reviewer_down ;;
+pause) act reviewer_pause ;;
+resume) act reviewer_resume ;;
+check) act reviewer_check ;;
+status) act reviewer_status --json | jq . ;;
+preview)
+	pr_args "$@"
+	out=$(act reviewer_preview "${args[@]}" --json)
+	jq -r .preview <<<"$out"
+	;;
+post | dismiss | focus | pickup)
+	pr_args "$@"
+	act "reviewer_$cmd" "${args[@]}"
+	;;
+start | replay)
+	pr_args "$@"
+	act "$root/scripts/$cmd.lua" "${args[@]}"
+	;;
+help | -h | --help) usage ;;
+*)
+	usage >&2
+	exit 1
+	;;
+esac

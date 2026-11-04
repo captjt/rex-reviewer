@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+# post-review: render a PR review draft, check it, and post it.
+# See docs/review-draft.md for the draft format and the rules.
+set -euo pipefail
+
+usage() {
+	cat <<'EOF'
+post-review: render a GitHub PR review draft, check it, and post it.
+
+Usage:
+  post-review --repo OWNER/NAME --pr N --by WHO [options] DRAFT.json
+
+Options:
+  --repo OWNER/NAME   repository (required)
+  --pr N              pull request number (required)
+  --by WHO            the harness and model that reviewed, for the footer,
+                      such as "Codex (GPT-6.1-Sol)" or "Claude Code (Opus 5.5)"
+                      (required)
+  --checked-by WHO    the harness and model that checked the findings, such
+                      as "Claude Code (Opus 5.5)" (optional)
+  --head SHA          the head the review covers; refuses if the PR moved
+  --marker TEXT       hidden marker text, such as "round=2 head=… thread=…"
+  --require-merge-risk  refuse a draft with no merge_risk
+  --dry-run          print the rendered review and change nothing
+
+Exit status:
+  0  posted, or rendered with --dry-run
+  1  usage error, or GitHub refused
+  3  the PR's head moved past --head
+  4  the draft breaks a rule: verdict vs findings, first person, empty text,
+     or a merge_risk verdict that isn't one of the rubric's words
+EOF
+}
+
+die() {
+	local code=$1
+	shift
+	printf 'post-review: %s\n' "$*" >&2
+	exit "$code"
+}
+
+repo="" pr="" by="" checked_by="" head="" marker="" draft="" dry=0 require_risk=0
+while [[ $# -gt 0 ]]; do
+	case $1 in
+	--repo) repo=$2; shift 2 ;;
+	--pr) pr=$2; shift 2 ;;
+	--by) by=$2; shift 2 ;;
+	--checked-by) checked_by=$2; shift 2 ;;
+	--head) head=$2; shift 2 ;;
+	--marker) marker=$2; shift 2 ;;
+	--dry-run) dry=1; shift ;;
+	--require-merge-risk) require_risk=1; shift ;;
+	-h | --help) usage; exit 0 ;;
+	-*) die 1 "unknown option $1" ;;
+	*) draft=$1; shift ;;
+	esac
+done
+[[ -n $repo && -n $pr && -n $by && -n $draft ]] || { usage >&2; exit 1; }
+[[ -f $draft ]] || die 1 "no draft at $draft"
+jq -e . "$draft" >/dev/null 2>&1 || die 4 "$draft isn't valid JSON"
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# --- The draft follows the rules ------------------------------------------
+
+event=$(jq -r '.event // ""' "$draft")
+case $event in
+APPROVE | REQUEST_CHANGES) ;;
+*) die 4 "event must be APPROVE or REQUEST_CHANGES, not '$event'" ;;
+esac
+blocking=$(jq '[.findings[]? | select(.severity == "blocking")] | length' "$draft")
+if [[ $event == APPROVE && $blocking -gt 0 ]]; then
+	die 4 "event is APPROVE but $blocking finding(s) are blocking"
+fi
+if [[ $event == REQUEST_CHANGES && $blocking -eq 0 ]]; then
+	die 4 "event is REQUEST_CHANGES but no finding is blocking"
+fi
+jq -e '(.verdict // .summary // "") | length > 0' "$draft" >/dev/null || die 4 "the draft has no verdict"
+jq -e '[.findings[]? | select(((.bullet // .title // "") | length) == 0)] | length == 0' "$draft" >/dev/null ||
+	die 4 "every finding needs a bullet or a title"
+
+# Merge risk: five verdicts, weighted into a level here, so the level always
+# follows the rubric in guides/merge-risk.md.
+risk=""
+if jq -e '.merge_risk != null' "$draft" >/dev/null; then
+	risk=$(jq -r '
+		{alignment: ["poor", "decent", "good"], impact: ["large", "medium", "small"],
+		 verification: ["poor", "decent", "good"], rollback_cost: ["high", "medium", "low"],
+		 error_detection: ["poor", "decent", "good", "n/a"]} as $words
+		| {alignment: 1, impact: 2, verification: 2, rollback_cost: 1.5, error_detection: 1} as $weight
+		| .merge_risk as $m
+		| [$words | keys[] as $k
+			| (($m[$k].verdict // "") | ascii_downcase) as $v
+			| ($words[$k] | index($v)) as $i
+			| if $i == null then error("merge_risk.\($k).verdict must be one of \($words[$k] | join(", ")), not \"\($v)\"")
+			  elif (($m[$k].gaps // []) | type) != "array" then error("merge_risk.\($k).gaps must be a list")
+			  else {p: [3, 2, 1, 1][$i], w: $weight[$k]} end]
+		| (map(.p * .w) | add) / (map(.w) | add)
+		| if . < 1.5 then "low" elif . < 2.25 then "medium" else "high" end' "$draft" 2>"$tmp/risk.err") ||
+		die 4 "$(sed -E 's/^jq: error( \(at [^)]*\))?: //' "$tmp/risk.err")"
+elif [[ $require_risk -eq 1 ]]; then
+	die 4 "the draft has no merge_risk; add the merge-risk assessment"
+fi
+
+# The footer says who reviewed, so the text never speaks in the first person.
+# Code spans and fenced blocks are skipped.
+jq -r '[(.verdict // .summary // ""), (.checked // ""), (.findings[]? | .bullet // "", .title // "", .body // ""), (.replies[]? | .body // ""), (.merge_risk // {} | .[] | .gaps // [] | .[])] | .[]' "$draft" >"$tmp/text"
+perl -0777 -pe 's/```.*?```//gs; s/`[^`\n]*`//g' "$tmp/text" >"$tmp/prose"
+if hits=$(grep -nE "(^|[^[:alnum:]_/'-])(I|I'm|I've|I'd|I'll|my|My|me|we|We|we're|We're|our|Our|us)([^[:alnum:]_/'-]|$)" "$tmp/prose" | cut -c1-200); then
+	die 4 "the draft speaks in the first person; the footer already says who reviewed. Rewrite these lines:
+$hits"
+fi
+
+# --- The PR is where the review says it is --------------------------------
+
+live=$(gh pr view "$pr" -R "$repo" --json headRefOid,state --jq '.state + " " + .headRefOid') || die 1 "can't read #$pr"
+state=${live%% *}
+live_head=${live#* }
+if [[ $state != OPEN ]]; then
+	[[ $dry -eq 1 ]] || die 1 "#$pr is $state"
+	printf 'post-review: #%s is %s; rendering anyway for --dry-run\n' "$pr" "$state" >&2
+fi
+if [[ -n $head && $head != "$live_head" ]]; then
+	die 3 "#$pr moved to ${live_head:0:7}; this review covers ${head:0:7}. Review the new commits first."
+fi
+head=${head:-$live_head}
+# The footer says the review is on behalf of the account that posts it.
+me=$(gh api user --jq .login) || die 1 "can't read the signed-in GitHub account"
+
+# Lines an inline comment can sit on: RIGHT-side lines in the PR's diff.
+gh pr diff "$pr" -R "$repo" >"$tmp/pr.diff" || die 1 "can't read #$pr's diff"
+awk '
+	/^\+\+\+ / { path = ($2 == "/dev/null") ? "" : substr($2, 3); next }
+	/^--- / || /^diff / { next }
+	/^@@/ { split($3, a, ","); n = substr(a[1], 2) + 0; next }
+	path != "" && /^[+ ]/ { print path "\t" n; n++ }
+' "$tmp/pr.diff" >"$tmp/lines"
+
+count=$(jq '.findings // [] | length' "$draft")
+valid="[]"
+for ((i = 0; i < count; i++)); do
+	path=$(jq -r ".findings[$i].path // \"\"" "$draft")
+	line=$(jq -r ".findings[$i].line // \"\"" "$draft")
+	start=$(jq -r ".findings[$i].start_line // \"\"" "$draft")
+	ok=false
+	if [[ -n $path && -n $line ]] && grep -qxF "$path	$line" "$tmp/lines"; then
+		ok=true
+		if [[ -n $start ]] && ! grep -qxF "$path	$start" "$tmp/lines"; then
+			ok=false
+		fi
+	fi
+	valid=$(jq -c --argjson ok "$ok" '. + [$ok]' <<<"$valid")
+done
+
+# --- Render ---------------------------------------------------------------
+
+# The footer, below a rule: who wrote it, on whose behalf. pr-reply's script
+# renders the same footer.
+# shellcheck disable=SC2016 # jq, not shell, expands these
+footer='def footer($who; $extra): "---\n\n<div align=\"right\"><sub><i>" + $who + " on behalf of @" + $me + $extra + "</i></sub></div>"; def footer($who): footer($who; "");'
+
+jq --argjson valid "$valid" --arg by "$by" --arg checked_by "$checked_by" --arg me "$me" \
+	--arg marker "$marker" --arg head "$head" --arg event "$event" --arg risk "$risk" "$footer"'
+	def indent: "  " + gsub("\n"; "\n  ");
+	# A blank line follows a category with gaps; otherwise the next category
+	# would join its last bullet.
+	def risk_block:
+		.merge_risk as $m
+		| [["alignment", "Alignment", ["poor", "decent", "good"]], ["impact", "Impact", ["large", "medium", "small"]],
+		   ["verification", "Verification", ["poor", "decent", "good"]], ["rollback_cost", "Rollback cost", ["high", "medium", "low"]],
+		   ["error_detection", "Error detection", ["poor", "decent", "good", "n/a"]]]
+		| map(.[0] as $k | .[1] as $name | .[2] as $words
+			| ($m[$k].verdict | ascii_downcase) as $v
+			| {text: ("**" + $name + ":** " + (if $v == "n/a" then "N/A" else $v end) + " " + (["⚠️", "👀", "✅", "✅"][$words | index($v)])
+				+ ([($m[$k].gaps // [])[] | "\n- " + .] | join(""))),
+			   gaps: ((($m[$k].gaps // []) | length) > 0)})
+		| reduce .[] as $c ({out: "", sep: ""}; {out: (.out + .sep + $c.text), sep: (if $c.gaps then "\n\n" else "\n" end)})
+		| "**Merge risk: " + $risk + "**\n\n" + .out;
+	def nodot: sub("[.;:]\\s*$"; "");
+	(.findings // []) as $f
+	| [range(0; $f | length) | {i: ., f: $f[.], inline: $valid[.]}] as $all
+	| def bullet:
+		.f as $x
+		| (if ($x.plus_one // "") != "" then
+			"+1 to [" + ($x.plus_one_label // "the existing comment") + "](" + $x.plus_one + ")"
+			+ (if ($x.bullet // "") != "" then ": " + $x.bullet else "" end)
+		  else ($x.bullet // $x.title) end) as $text
+		| if .inline then
+			($text | nodot) + "; details in the inline comment on `" + ($x.path | split("/") | last) + ":" + ($x.line | tostring) + "`."
+		  elif ($x.body // "") != "" and ($x.plus_one // "") == "" then
+			(if ($x.path // "") != "" then ($text | nodot) + " (`" + $x.path + (if $x.line then ":" + ($x.line | tostring) else "" end) + "`)." else $text end)
+			+ "\n\n" + ($x.body | indent)
+		  else $text end;
+	  def section($name; $sev):
+		[$all[] | select(.f.severity == $sev)] as $items
+		| if ($items | length) == 0 then empty
+		  else "**" + $name + "**\n" + ([$items[] | "- " + bullet] | join("\n")) end;
+	{
+		commit_id: $head,
+		event: $event,
+		body: ([
+			(.verdict // .summary),
+			section("Blocking"; "blocking"),
+			section("Non-blocking"; "non-blocking"),
+			(if (.checked // "") != "" then .checked else empty end),
+			(if $risk != "" then risk_block else empty end),
+			footer($by; if $checked_by != "" then " · checked by " + $checked_by else "" end)
+				+ (if $marker != "" then "\n<!-- pr-review " + $marker + " -->" else "" end)
+		] | join("\n\n")),
+		comments: [$all[] | select(.inline) | .f | {
+			path, line, side: (.side // "RIGHT"),
+			body: (.body
+				+ (if (.suggestion // null) != null then "\n\n```suggestion\n" + .suggestion + "\n```" else "" end)
+				+ "\n\n" + footer($by))
+		} + (if .start_line then {start_line, start_side: (.side // "RIGHT")} else {} end)]
+	}
+	| if (.comments | length) == 0 then del(.comments) else . end
+' "$draft" >"$tmp/payload.json"
+
+jq -c --arg by "$by" --arg me "$me" "$footer"'[.replies[]? | {comment_id, body: (.body + "\n\n" + footer($by))}]' "$draft" >"$tmp/replies.json"
+
+if [[ $dry -eq 1 ]]; then
+	jq -r '.event + " on " + .commit_id[0:7] + "\n\n" + .body
+		+ ([.comments[]? | "\n\n── inline on " + .path + ":" + (.line | tostring) + " ──\n" + .body] | join(""))' "$tmp/payload.json"
+	jq -r '.[] | "\n\n── reply to comment " + (.comment_id | tostring) + " ──\n" + .body' "$tmp/replies.json"
+	exit 0
+fi
+
+# --- Post: replies first, so the review lands last ------------------------
+
+replied=0
+while IFS= read -r reply; do
+	[[ -n $reply ]] || continue
+	id=$(jq -r .comment_id <<<"$reply")
+	jq '{body}' <<<"$reply" >"$tmp/reply.json"
+	gh api -X POST "repos/$repo/pulls/$pr/comments/$id/replies" --input "$tmp/reply.json" >/dev/null ||
+		die 1 "GitHub refused the reply to comment $id"
+	replied=$((replied + 1))
+done < <(jq -c '.[]' "$tmp/replies.json")
+
+out=$(gh api -X POST "repos/$repo/pulls/$pr/reviews" --input "$tmp/payload.json") || die 1 "GitHub refused the review"
+jq -c --argjson replied "$replied" --argjson inline "$(jq '.comments // [] | length' "$tmp/payload.json")" --arg risk "$risk" \
+	'{review_id: .id, state, url: .html_url, inline: $inline, replies: $replied, merge_risk: (if $risk == "" then null else $risk end)}' <<<"$out"
