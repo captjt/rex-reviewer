@@ -138,8 +138,8 @@ struct StatTile: View {
             Text(label)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.85)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
             Text(verbatim: "\(value)")
                 .font(.title2.weight(.semibold))
             if let days, days.count > 1 {

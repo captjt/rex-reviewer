@@ -24,7 +24,8 @@ Setup:
   rex-reviewer doctor          check the config, the tools, and the repos
   rex-reviewer launch-agent    keep the watcher running: start it at login and
                                repair it every 5 minutes (--remove to undo)
-  rex-reviewer app             build and open the menu bar app
+  rex-reviewer app [--login]   build and open the menu bar app; --login also
+                               opens it at login
 
 The watcher:
   rex-reviewer up | down       start or stop it
@@ -143,7 +144,12 @@ case $cmd in
 setup) setup ;;
 doctor) doctor ;;
 launch-agent) launch_agent "$@" ;;
-app) "$root/menubar/build.sh" ;;
+app)
+	"$root/menubar/build.sh"
+	if [[ ${1:-} == --login ]]; then
+		"$HOME/Applications/Rex Reviewer.app/Contents/MacOS/RexReviewer" --open-at-login on
+	fi
+	;;
 up) act reviewer_up ;;
 down) act reviewer_down ;;
 pause) act reviewer_pause ;;

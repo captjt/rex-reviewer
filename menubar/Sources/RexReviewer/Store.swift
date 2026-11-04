@@ -26,6 +26,23 @@ final class Store {
     @ObservationIgnored private var ticker: Task<Void, Never>?
 
     init() {
+        // `RexReviewer --open-at-login on|off`: set the login item and quit.
+        // `rex-reviewer app --login` uses it.
+        let args = CommandLine.arguments
+        if let i = args.firstIndex(of: "--open-at-login"), i + 1 < args.count {
+            do {
+                if args[i + 1] == "off" {
+                    try SMAppService.mainApp.unregister()
+                } else {
+                    try SMAppService.mainApp.register()
+                }
+                print("open at login: \(SMAppService.mainApp.status == .enabled ? "on" : "off")")
+                exit(0)
+            } catch {
+                FileHandle.standardError.write(Data("open at login: \(error.localizedDescription)\n".utf8))
+                exit(1)
+            }
+        }
         reload()
         watch(Paths.stateDir)
         ticker = Task { [weak self] in
