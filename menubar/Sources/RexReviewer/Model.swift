@@ -33,6 +33,8 @@ struct Entry: Decodable, Identifiable, Equatable, Sendable {
     var deletions: Int?
     /// What the PR changes, in a sentence or two from the last round's draft.
     var implementation: String?
+    /// What the agents have spent on the PR so far, all rounds together.
+    var tokens: PRTokens?
     var history: LenientList<Round>?
 
     var id: String { "\(repo)#\(pr)" }
@@ -42,7 +44,7 @@ struct Entry: Decodable, Identifiable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case repo, pr, title, author, url, state, phase, round, trigger, verdict, worktree, outcome
-        case additions, deletions, implementation, history
+        case additions, deletions, implementation, tokens, history
         case mergeRisk = "merge_risk"
         case reviewURL = "review_url"
         case startedAt = "started_at"
@@ -68,9 +70,11 @@ struct Round: Decodable, Equatable, Sendable {
     var blocking: Int?
     var nonBlocking: Int?
     var mergeRisk: String?
+    /// What the agents spent in this round.
+    var tokens: TokenCount?
 
     enum CodingKeys: String, CodingKey {
-        case round, verdict, by, at, url, blocking
+        case round, verdict, by, at, url, blocking, tokens
         case requestedAt = "requested_at"
         case startedAt = "started_at"
         case nonBlocking = "non_blocking"
@@ -79,6 +83,28 @@ struct Round: Decodable, Equatable, Sendable {
 
     /// A review the agents posted, rather than a dismissal or your own review.
     var isPosted: Bool { by == "agents" || by == "codex" }
+}
+
+/// Tokens as bin/token-usage counts them. input is what wasn't cached.
+struct TokenCount: Decodable, Equatable, Sendable {
+    var input: Int?
+    var cacheRead: Int?
+    var cacheWrite: Int?
+    var output: Int?
+    var total: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case input, output, total
+        case cacheRead = "cache_read"
+        case cacheWrite = "cache_write"
+    }
+}
+
+/// bin/token-usage's output for a PR: each agent's count, and their total.
+struct PRTokens: Decodable, Equatable, Sendable {
+    var codex: TokenCount?
+    var claude: TokenCount?
+    var total: Int?
 }
 
 /// A JSON list that Lua may have written as {} when it was empty.
@@ -165,6 +191,20 @@ enum Format {
     static func ago(_ date: Date, now: Date) -> String {
         let s = short(since: date, now: now)
         return s == "now" ? "just now" : s + " ago"
+    }
+
+    /// "940", "812K", "5.8M", "17M", "1.2B".
+    static func tokens(_ n: Int) -> String {
+        func scaled(_ unit: Double, _ suffix: String) -> String {
+            let v = Double(n) / unit
+            return String(format: v < 10 ? "%.1f" : "%.0f", v) + suffix
+        }
+        switch n {
+        case ..<1_000: return "\(n)"
+        case ..<1_000_000: return "\(n / 1_000)K"
+        case ..<1_000_000_000: return scaled(1_000_000, "M")
+        default: return scaled(1_000_000_000, "B")
+        }
     }
 
     /// "25m", "1h 40m", "2d 3h".

@@ -26,10 +26,18 @@ def pr($n; $title; $author; $additions; $deletions):
    url: "https://github.com/example/storefront/pull/\($n)",
    additions: $additions, deletions: $deletions, trigger: "request"};
 
+# A round's tokens: mostly cached input, and more when it found more.
+def spent($blocking; $non_blocking):
+  (($blocking * 3 + $non_blocking + 4) * 1100000) as $t
+  | {input: ($t * 0.04 | floor), cache_read: ($t * 0.94 | floor),
+     cache_write: ($t * 0.01 | floor), output: ($t * 0.01 | floor)}
+  | .total = .input + .cache_read + .cache_write + .output;
+
 def round($n; $verdict; $at; $blocking; $non_blocking; $risk):
   {round: $n, trigger: (if $n == 1 then "request" else "re-request" end), verdict: $verdict,
    by: "agents", requested_at: ago($at + 25), started_at: ago($at + 22), at: ago($at),
-   blocking: $blocking, non_blocking: $non_blocking, merge_risk: $risk};
+   blocking: $blocking, non_blocking: $non_blocking, merge_risk: $risk,
+   tokens: spent($blocking; $non_blocking)};
 
 # The entry that posted rounds leave behind.
 def posted($rounds; $implementation):
@@ -37,7 +45,8 @@ def posted($rounds; $implementation):
   | {state: "posted", round: $last.round, trigger: $last.trigger, verdict: $last.verdict,
      merge_risk: $last.merge_risk, requested_at: $last.requested_at,
      started_at: $last.started_at, posted_at: $last.at,
-     implementation: $implementation, history: $rounds};
+     implementation: $implementation, history: $rounds,
+     tokens: {total: ($rounds | map(.tokens.total) | add)}};
 
 def ended($outcome; $at): {state: "cleaned", outcome: $outcome, ended_at: ago($at)};
 

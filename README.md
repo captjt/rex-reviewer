@@ -188,12 +188,14 @@ The menu bar app has two tabs.
 - **Recap** sums up today, this week, or the last 30 days:
   - reviews posted, with a per-day sparkline and the change from the period
     before;
-  - approvals, changes requested, PRs merged, and the median time from a
-    request to its review;
+  - approvals, changes requested, PRs merged, the median time from a
+    request to its review, and the tokens the agents used;
   - the PRs that merged (with each round's verdict, such as ✕ → ✓), those
     still waiting on their authors, and those closed without merging. Each
     says what the PR changes, in a sentence or two the reviewer wrote while
-    reviewing it.
+    reviewing it, and how many tokens it has taken from the first round on.
+    `bin/token-usage` counts them from the agents' own logs, cached input
+    included.
 
   **Copy as Markdown** turns it into a standup or weekly note.
 
@@ -226,7 +228,7 @@ scripts/                 the watcher, starting a round, replaying a PR
 lua/rex_reviewer/        config, ledger, rules, GitHub, agents, rounds, watcher
 briefs/                  the prompts, with their optional parts
 guides/                  the default style guide and merge-risk rubric
-bin/                     rex-reviewer, post-review, rex-agent
+bin/                     rex-reviewer, post-review, rex-agent, token-usage
 menubar/                 the SwiftUI menu bar app
 docs/                    the ledger and the review draft
 ```

@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# token-usage: the tokens the agents spent in a PR's worktree, from their own
+# logs. Every round's reviewer and checker, and their subagents, run with the
+# worktree as their working directory, so it identifies the PR.
+set -euo pipefail
+
+usage() {
+	cat <<'EOF'
+token-usage: the tokens the agents spent in a worktree, from their own logs.
+
+Usage:
+  token-usage [--until TIME] WORKTREE
+
+  --until TIME   count only what was logged by TIME, in the ledger's format
+                 (2026-11-04T19:42:05Z), to split a PR's tokens by round
+
+Prints one JSON object, with an entry for each agent that ran there:
+
+  {"codex": {...}, "claude": {...}, "total": 6912034}
+
+Each agent has input (not cached), cache_read, cache_write, output, and
+total tokens, summed over every session and subagent whose working directory
+is WORKTREE. The worktree itself needn't exist anymore.
+
+  Codex        its threads in ~/.codex/state_*.sqlite. The split comes from
+               each thread's rollout file; without one, the thread's total
+               counts as input, and with --until, all of it counts if the
+               thread started by then.
+  Claude Code  the transcripts in ~/.claude/projects/<worktree>/ and their
+               subagents'. Each API response counts once.
+EOF
+}
+
+until="" wt=""
+while [[ $# -gt 0 ]]; do
+	case $1 in
+	--until) until=${2:-}; shift 2 ;;
+	-h | --help) usage; exit 0 ;;
+	-*) usage >&2; exit 1 ;;
+	*) wt=${1%/}; shift ;;
+	esac
+done
+[[ -n $wt ]] || { usage >&2; exit 1; }
+export LC_ALL=C
+
+# The logs' timestamps carry milliseconds (…T19:42:05.120Z). As strings they
+# sort before the ledger's …T19:42:05Z, so a cutoff includes its own second.
+# With no cutoff, "~" sorts after every timestamp.
+cutoff=${until:-"~"}
+cutoff_epoch=$(if [[ -n $until ]]; then date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$until" +%s; else echo 9999999999; fi)
+
+# --- Codex ------------------------------------------------------------------
+
+# The last token count in a rollout by the cutoff, which totals the thread.
+last_count() {
+	grep -F '"token_count"' |
+		jq -c -R --arg cutoff "$cutoff" 'fromjson? | select(.payload.info != null and .timestamp <= $cutoff) | .payload.info.total_token_usage' |
+		tail -1
+}
+
+codex='[]'
+db=$(ls -t "$HOME"/.codex/state_*.sqlite 2>/dev/null | head -1 || true)
+if [[ -n $db ]] && command -v sqlite3 >/dev/null; then
+	while IFS=$'\t' read -r used created rollout; do
+		[[ -n $used ]] || continue
+		# Codex compresses archived rollouts after a while.
+		count="" have_log=0
+		if [[ -f $rollout ]]; then
+			have_log=1
+			count=$(last_count <"$rollout" || true)
+		elif [[ -f $rollout.zst ]] && command -v zstd >/dev/null; then
+			have_log=1
+			count=$(zstd -dcq "$rollout.zst" | last_count || true)
+		fi
+		# A log with nothing by the cutoff, or a thread started after it,
+		# adds nothing.
+		if [[ $have_log -eq 1 && -z $count ]] || [[ $created -gt $cutoff_epoch ]]; then
+			continue
+		fi
+		codex=$(jq -c --argjson used "$used" --arg count "$count" '. + [
+			if $count == "" then {input: $used, cache_read: 0, cache_write: 0, output: 0}
+			else $count | fromjson | {
+				input: (.input_tokens - (.cached_input_tokens // 0)),
+				cache_read: (.cached_input_tokens // 0),
+				cache_write: (.cache_write_input_tokens // 0),
+				output: .output_tokens
+			} end]' <<<"$codex")
+	done < <(sqlite3 -readonly -separator $'\t' "$db" "select tokens_used, created_at, rollout_path from threads where cwd = '${wt//\'/\'\'}'")
+fi
+
+# --- Claude Code ------------------------------------------------------------
+
+# Claude Code names a project folder after its cwd, with every character
+# that isn't a letter or digit replaced by -.
+project="$HOME/.claude/projects/$(printf '%s' "$wt" | sed 's/[^[:alnum:]]/-/g')"
+claude='[]'
+if [[ -d $project ]]; then
+	# A response with several content blocks takes a line for each, all with
+	# the same usage, so each message ID counts once.
+	claude=$(find "$project" -name '*.jsonl' -type f -exec cat {} + |
+		jq -c -R --arg cutoff "$cutoff" 'fromjson? | select(.type == "assistant" and .message.usage != null and (.timestamp // "") <= $cutoff) | {id: .message.id, u: .message.usage}' |
+		jq -s -c 'unique_by(.id) | map(.u | {
+			input: (.input_tokens // 0),
+			cache_read: (.cache_read_input_tokens // 0),
+			cache_write: (.cache_creation_input_tokens // 0),
+			output: (.output_tokens // 0)
+		})')
+fi
+
+# --- Totals -----------------------------------------------------------------
+
+jq -n -c --argjson codex "$codex" --argjson claude "$claude" '
+	def sum: reduce .[] as $u ({input: 0, cache_read: 0, cache_write: 0, output: 0};
+		.input += $u.input | .cache_read += $u.cache_read
+		| .cache_write += $u.cache_write | .output += $u.output)
+		| .total = .input + .cache_read + .cache_write + .output;
+	(if ($codex | length) > 0 then {codex: ($codex | sum)} else {} end)
+	+ (if ($claude | length) > 0 then {claude: ($claude | sum)} else {} end)
+	| .total = ([.[].total] | add // 0)'

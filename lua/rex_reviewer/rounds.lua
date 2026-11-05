@@ -147,7 +147,7 @@ end
 ---------------------------------------------------------------------------
 -- Prep: the worktree at the head, and the context the agents read.
 
-local function worktree_path(e)
+function M.worktree_path(e)
   return string.format("%s/worktrees/%s/pr-%d", config.DATA_DIR, e.repo, e.pr)
 end
 
@@ -186,7 +186,7 @@ function M.prep(repo, pr)
   end
   local checkout = config.load().repos[repo].checkout
   local round = e.state == "reviewing" and e.round or e.round + 1
-  local wt = worktree_path(e)
+  local wt = M.worktree_path(e)
   local ref = round_ref(e, round)
   local git = function(args, opts)
     return util.run(util.append({ "git", "-C", checkout }, args), opts)
@@ -450,6 +450,16 @@ local function implementation(d)
   return s ~= "" and s or nil
 end
 
+-- What the agents have spent on the PR so far, from their own logs. Nil
+-- when bin/token-usage can't tell.
+local function tokens_spent(e)
+  if not e.worktree then
+    return nil
+  end
+  local res = util.run({ config.ROOT .. "/bin/token-usage", e.worktree }, { check = false })
+  return res.ok and util.decode(res.stdout) or nil
+end
+
 -- Render the checked review with bin/post-review, and post it unless dry.
 -- The footer names the reviewer and the checker, with their models.
 function M.post(repo, pr, opts)
@@ -499,7 +509,7 @@ function M.post(repo, pr, opts)
   rules.mark_posted(e, {
     head = e.round_head, verdict = posted.state, review_id = posted.review_id, url = posted.url,
     blocking = blocking, non_blocking = non_blocking, merge_risk = posted.merge_risk,
-    implementation = implementation(checked),
+    implementation = implementation(checked), tokens = tokens_spent(e),
   }, util.now())
   e.merge_risk = posted.merge_risk
   ledger.save(e)
@@ -527,6 +537,7 @@ function M.dismiss(repo, pr)
   local d = util.decode(util.read_file(out .. "/review.verified.json") or util.read_file(out .. "/review.json")) or {}
   rules.mark_posted(e, {
     head = e.round_head, verdict = "DISMISSED", by = "you", implementation = implementation(d),
+    tokens = tokens_spent(e),
   }, util.now())
   ledger.save(e)
   M.set_status(e, "DISMISSED")
@@ -544,6 +555,9 @@ function M.cleanup(repo, pr, session)
     return nil
   end
   local checkout = config.load().repos[repo].checkout
+  -- The final count, while the agents' logs are all at hand: Codex
+  -- compresses archived threads, and Claude Code deletes old transcripts.
+  e.tokens = tokens_spent(e) or e.tokens
   if session then
     M.close_pane(session, e.checker_pane)
     M.close_pane(session, e.pane)

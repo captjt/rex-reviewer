@@ -46,6 +46,10 @@ struct Recap {
     let perDay: [Day]?
     /// The median time from a round's request to its review.
     let medianWait: TimeInterval?
+    /// What the agents spent in the rounds that ended in the range, posted
+    /// or dismissed, and how much of it was cached input.
+    let tokens: Int
+    let cachedTokens: Int
 
     var approved: Int { reviews.filter { $0.round.verdict == "APPROVED" }.count }
     var changesRequested: Int { reviews.filter { $0.round.verdict == "CHANGES_REQUESTED" }.count }
@@ -72,9 +76,15 @@ struct Recap {
         var reviews: [Review] = []
         var previous = 0
         var dismissed = 0
+        var tokens = 0
+        var cachedTokens = 0
         for e in entries {
             for r in e.rounds {
                 guard let at = r.at?.isoDate else { continue }
+                if at >= start {
+                    tokens += r.tokens?.total ?? 0
+                    cachedTokens += r.tokens?.cacheRead ?? 0
+                }
                 if r.verdict == "DISMISSED" {
                     if at >= start { dismissed += 1 }
                 } else if r.isPosted {
@@ -90,6 +100,8 @@ struct Recap {
         self.reviews = reviews
         self.previousReviews = previous
         self.dismissed = dismissed
+        self.tokens = tokens
+        self.cachedTokens = cachedTokens
 
         var merged: [(entry: Entry, at: Date)] = []
         var closed: [(entry: Entry, at: Date)] = []
@@ -159,6 +171,19 @@ struct Recap {
         }.joined(separator: " → ")
     }
 
+    /// "5.8M tokens": what the agents have spent on the PR, all rounds together.
+    static func tokens(_ e: Entry) -> String? {
+        guard let t = e.tokens?.total, t > 0 else { return nil }
+        return Format.tokens(t) + " tokens"
+    }
+
+    /// "52M tokens, 96% cached", for the rounds in the range.
+    var tokenLine: String? {
+        guard tokens > 0 else { return nil }
+        let cached = Int((Double(cachedTokens) / Double(tokens) * 100).rounded())
+        return "\(Format.tokens(tokens)) tokens, \(cached)% cached"
+    }
+
     var title: String {
         let f = DateFormatter()
         f.setLocalizedDateFormatFromTemplate("MMM d")
@@ -181,6 +206,7 @@ struct Recap {
         var line = "\(reviews.count) review\(reviews.count == 1 ? "" : "s") posted: \(approved) approved, \(changesRequested) changes requested."
         line += " \(merged.count) PR\(merged.count == 1 ? "" : "s") merged."
         if let wait = medianWait { line += " Median time from request to review: \(Format.duration(wait))." }
+        if let t = tokenLine { line += " The agents used \(t)." }
         out.append(line)
         if !merged.isEmpty {
             out += ["", "Merged:"]
@@ -188,6 +214,7 @@ struct Recap {
                 let n = m.entry.rounds.filter(\.isPosted).count
                 var bits = ["\(Recap.path(m.entry)) in \(n) round\(n == 1 ? "" : "s")"]
                 if let risk = m.entry.mergeRisk { bits.append("\(risk) merge risk") }
+                if let t = Recap.tokens(m.entry) { bits.append(t) }
                 out.append("- \(link(m.entry)) \(m.entry.title ?? "")\(by(m.entry)): \(bits.joined(separator: ", "))")
                 out += about(m.entry)
             }
@@ -196,14 +223,15 @@ struct Recap {
             out += ["", "Still open:"]
             for o in open {
                 let verdict = Verdict(o.last.round.verdict).label.lowercased()
-                out.append("- \(link(o.entry)) \(o.entry.title ?? "")\(by(o.entry)): \(verdict) \(Format.ago(o.last.at, now: now))")
+                out.append("- \(link(o.entry)) \(o.entry.title ?? "")\(by(o.entry)): \(verdict) \(Format.ago(o.last.at, now: now))"
+                    + (Recap.tokens(o.entry).map { ", \($0) so far" } ?? ""))
                 out += about(o.entry)
             }
         }
         if !closed.isEmpty {
             out += ["", "Closed without merging:"]
             for c in closed {
-                out.append("- \(link(c.entry)) \(c.entry.title ?? "")\(by(c.entry))")
+                out.append("- \(link(c.entry)) \(c.entry.title ?? "")\(by(c.entry))" + (Recap.tokens(c.entry).map { ": \($0)" } ?? ""))
                 out += about(c.entry)
             }
         }

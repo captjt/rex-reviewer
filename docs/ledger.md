@@ -77,6 +77,7 @@ One entry per PR the tool has seen.
 | `verdict` | the last round's outcome: `APPROVED`, `CHANGES_REQUESTED`, or `DISMISSED` |
 | `merge_risk` | `low`, `medium`, or `high`, when assessed |
 | `implementation` | what the PR changes, in a sentence or two, from the last round's draft |
+| `tokens` | what the agents have spent on the PR so far, as `bin/token-usage` prints it: `codex` and `claude`, each with `input` (not cached), `cache_read`, `cache_write`, `output`, and `total`, and the `total` of both. Counted when a round ends, and once more at cleanup |
 | `review_url` | the posted review |
 | `outcome` | `merged` or `closed` once the PR ends; it stays after cleanup |
 | `ended_at` | when the watcher saw it merged or closed |
@@ -92,8 +93,9 @@ One entry per PR the tool has seen.
 Each `history` record: `round`, `trigger`, `head`, `verdict`, `review_id`,
 `url`, `by` (`agents`, or `you` for a dismissal or your own review),
 `requested_at`, `started_at`, `at` (when it posted or was dismissed),
-`blocking` and `non_blocking` (finding counts), and `merge_risk`. Records
-written before 0.2 have only the first six and `at`. The menu bar app's recap
+`blocking` and `non_blocking` (finding counts), `merge_risk`, and `tokens`:
+what the agents spent in the round, with the same five counts summed across
+agents. Records written before 0.2 have only the first six and `at`. The menu bar app's recap
 reads these records, with the `merged` and `closed` events in `events.jsonl`
 for entries that predate `outcome`.
 

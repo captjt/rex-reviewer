@@ -32,6 +32,10 @@ The watcher:
   rex-reviewer pause | resume  stop or resume starting new rounds
   rex-reviewer check           check GitHub now
   rex-reviewer status          every PR it knows about
+  rex-reviewer backfill-tokens [save=true] [also=PATH]
+                               count the tokens of PRs reviewed before
+                               rex-reviewer counted them; a dry run unless
+                               save=true (see scripts/backfill-tokens.lua)
 
 A round (add a repo as owner/name when more than one is configured):
   rex-reviewer preview PR [REPO]   render the checked review
@@ -169,6 +173,7 @@ start | replay)
 	pr_args "$@"
 	act "$root/scripts/$cmd.lua" "${args[@]}"
 	;;
+backfill-tokens) act "$root/scripts/backfill-tokens.lua" "$@" | jq . ;;
 help | -h | --help) usage ;;
 *)
 	usage >&2

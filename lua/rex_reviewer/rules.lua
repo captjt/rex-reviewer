@@ -82,11 +82,42 @@ function M.mark_started(e, head, now)
   return e
 end
 
+M.TOKEN_FIELDS = { "input", "cache_read", "cache_write", "output", "total" }
+
+-- bin/token-usage's counts, summed across agents.
+function M.flat_tokens(t)
+  local out = {}
+  for _, k in ipairs(M.TOKEN_FIELDS) do
+    out[k] = 0
+    for _, agent in pairs(t) do
+      if type(agent) == "table" then
+        out[k] = out[k] + (agent[k] or 0)
+      end
+    end
+  end
+  return out
+end
+
+-- What after adds to before, count by count, as flat_tokens gives them.
+function M.token_delta(before, after)
+  local out = {}
+  for _, k in ipairs(M.TOKEN_FIELDS) do
+    out[k] = math.max(0, after[k] - before[k])
+  end
+  return out
+end
+
 -- A round ended: a review was posted on head, or you dismissed it. by is
 -- "agents" for this tool's rounds and "you" for your own review. The history
 -- record is what the recap reads, so it keeps the round's timing, findings,
 -- and merge risk after the worktree is gone.
 function M.mark_posted(e, fields, now)
+  -- fields.tokens is what the agents have spent on the PR so far, and the
+  -- round's share is what it added since the last round. With no earlier
+  -- count, that's only known for round 1.
+  local before = e.tokens and M.flat_tokens(e.tokens) or (e.round == 1 and M.flat_tokens({}) or nil)
+  local round_tokens = fields.tokens and before and M.token_delta(before, M.flat_tokens(fields.tokens)) or nil
+  e.tokens = fields.tokens or e.tokens
   e.state = "posted"
   e.reviewed_head = fields.head or e.round_head
   e.head = e.head or e.reviewed_head
@@ -111,6 +142,7 @@ function M.mark_posted(e, fields, now)
     blocking = fields.blocking,
     non_blocking = fields.non_blocking,
     merge_risk = fields.merge_risk,
+    tokens = round_tokens,
   }
   return e
 end

@@ -55,7 +55,7 @@ struct RecapView: View {
                 if !recap.closed.isEmpty {
                     SectionTitle("Closed without merging · \(recap.closed.count)")
                     ForEach(recap.closed, id: \.entry.id) { c in
-                        RecapRow(store: store, entry: c.entry, at: c.at, now: now, detail: byline(c.entry), dimmed: true)
+                        RecapRow(store: store, entry: c.entry, at: c.at, now: now, detail: closedDetail(c.entry), dimmed: true)
                     }
                 }
             }
@@ -95,6 +95,9 @@ struct RecapView: View {
         if recap.dismissed > 0 {
             bits.append("\(recap.dismissed) dismissed")
         }
+        if let tokens = recap.tokenLine {
+            bits.append(tokens)
+        }
         return bits.isEmpty ? nil : bits.joined(separator: " · ")
     }
 
@@ -110,15 +113,21 @@ struct RecapView: View {
         let n = e.rounds.filter(\.isPosted).count
         var bits = [Recap.path(e), "\(n) round\(n == 1 ? "" : "s")"]
         if let risk = e.mergeRisk { bits.append("\(risk) risk") }
+        if let tokens = Recap.tokens(e) { bits.append(tokens) }
         let by = byline(e)
         if !by.isEmpty { bits.append(by) }
         return bits.joined(separator: " · ")
+    }
+
+    private func closedDetail(_ e: Entry) -> String {
+        ([Recap.tokens(e)].compactMap { $0 } + [byline(e)].filter { !$0.isEmpty }).joined(separator: " · ")
     }
 
     private func openDetail(_ e: Entry, _ last: Recap.Review) -> String {
         let waiting = last.round.verdict == "APPROVED" ? "approved, not merged yet" : "changes requested, waiting on the author"
         var bits = [waiting]
         if let b = last.round.blocking, b > 0 { bits.append("\(b) blocking") }
+        if let tokens = Recap.tokens(e) { bits.append(tokens + " so far") }
         let by = byline(e)
         if !by.isEmpty { bits.append(by) }
         return bits.joined(separator: " · ")
