@@ -58,6 +58,14 @@ last_count() {
 		tail -1
 }
 
+# Codex's state is a WAL-mode database. A read-only connection needs its
+# -shm file, which exists only while Codex has it open; when it doesn't, the
+# WAL is already in the file, so an immutable read of the file is complete.
+codex_sql() {
+	sqlite3 -readonly -separator $'\t' "$db" "$1" 2>/dev/null ||
+		sqlite3 -separator $'\t' "file:$db?immutable=1" "$1"
+}
+
 codex='[]'
 db=$(ls -t "$HOME"/.codex/state_*.sqlite 2>/dev/null | head -1 || true)
 if [[ -n $db ]] && command -v sqlite3 >/dev/null; then
@@ -85,7 +93,7 @@ if [[ -n $db ]] && command -v sqlite3 >/dev/null; then
 				cache_write: (.cache_write_input_tokens // 0),
 				output: .output_tokens
 			} end]' <<<"$codex")
-	done < <(sqlite3 -readonly -separator $'\t' "$db" "select tokens_used, created_at, rollout_path from threads where cwd = '${wt//\'/\'\'}'")
+	done < <(codex_sql "select tokens_used, created_at, rollout_path from threads where cwd = '${wt//\'/\'\'}'")
 fi
 
 # --- Claude Code ------------------------------------------------------------

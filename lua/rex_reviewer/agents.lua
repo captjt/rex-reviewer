@@ -82,6 +82,18 @@ local function sql_quote(s)
   return "'" .. (s or ""):gsub("'", "''") .. "'"
 end
 
+-- Codex keeps its state in a WAL-mode database. A read-only connection
+-- needs its -shm file, which exists only while Codex has the database open.
+-- When it doesn't, the WAL is already in the file, so an immutable read of
+-- the file alone is complete.
+local function codex_query(db, sql)
+  local res = util.run({ "sqlite3", "-readonly", db, sql }, { check = false })
+  if not res.ok then
+    res = util.run({ "sqlite3", "file:" .. db .. "?immutable=1", sql }, { check = false })
+  end
+  return res.ok and util.trim(res.stdout) or ""
+end
+
 -- The newest top-level Codex thread whose cwd is this worktree, started at
 -- or after since (epoch seconds) when given, so a thread left by a failed
 -- start isn't taken for a new one. Subagent threads share the cwd; their
@@ -94,15 +106,14 @@ function M.codex_thread(cwd, since)
   local sql = "select id from threads where cwd = " .. sql_quote(cwd)
     .. (since and (" and created_at >= " .. math.floor(since)) or "")
     .. " and archived = 0 and source not like '{%' order by created_at desc limit 1"
-  local id = util.trim(util.run({ "sqlite3", "-readonly", db, sql }, { check = false }).stdout)
+  local id = codex_query(db, sql)
   return id ~= "" and id or nil
 end
 
 -- "Codex (GPT-6.1-Sol)": the thread's model, by Codex's display name.
 function M.codex_name(thread)
   local db = codex_db()
-  local model = db and thread and util.trim(util.run({ "sqlite3", "-readonly", db,
-    "select model from threads where id = " .. sql_quote(thread) }, { check = false }).stdout) or ""
+  local model = db and thread and codex_query(db, "select model from threads where id = " .. sql_quote(thread)) or ""
   if model == "" then
     return "Codex"
   end
