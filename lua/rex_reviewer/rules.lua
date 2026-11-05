@@ -94,6 +94,7 @@ function M.mark_posted(e, fields, now)
   e.verdict = fields.verdict
   e.review_id = fields.review_id
   e.review_url = fields.url
+  e.implementation = fields.implementation or e.implementation
   -- Lua writes an empty history as {}, which reads back as a table either way.
   e.history = type(e.history) == "table" and e.history or {}
   e.history[#e.history + 1] = {

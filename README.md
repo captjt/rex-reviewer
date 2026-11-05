@@ -172,7 +172,9 @@ The menu bar app has two tabs.
   - approvals, changes requested, PRs merged, and the median time from a
     request to its review;
   - the PRs that merged (with each round's verdict, such as ✕ → ✓), those
-    still waiting on their authors, and those closed without merging.
+    still waiting on their authors, and those closed without merging. Each
+    says what the PR changes, in a sentence or two the reviewer wrote while
+    reviewing it.
 
   **Copy as Markdown** turns it into a standup or weekly note.
 

@@ -31,6 +31,8 @@ struct Entry: Decodable, Identifiable, Equatable, Sendable {
     var requestedAt: String?
     var additions: Int?
     var deletions: Int?
+    /// What the PR changes, in a sentence or two from the last round's draft.
+    var implementation: String?
     var history: LenientList<Round>?
 
     var id: String { "\(repo)#\(pr)" }
@@ -40,7 +42,7 @@ struct Entry: Decodable, Identifiable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case repo, pr, title, author, url, state, phase, round, trigger, verdict, worktree, outcome
-        case additions, deletions, history
+        case additions, deletions, implementation, history
         case mergeRisk = "merge_risk"
         case reviewURL = "review_url"
         case startedAt = "started_at"

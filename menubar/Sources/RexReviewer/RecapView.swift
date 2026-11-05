@@ -219,7 +219,14 @@ struct RecapRow: View {
             ) {
                 Image(systemName: verdict.symbol).foregroundStyle(verdict.color)
             } detail: {
-                Text(detail).lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(detail).lineLimit(1)
+                    if let about = entry.implementation {
+                        Text(about)
+                            .lineLimit(3)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
         }
         .contextMenu { LinkMenu(store: store, entry: entry) }

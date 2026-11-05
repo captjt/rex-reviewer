@@ -174,6 +174,8 @@ struct Recap {
             return e.url.map { "[\(name)](\($0))" } ?? name
         }
         func by(_ e: Entry) -> String { e.author.map { " by @\($0)" } ?? "" }
+        // What the PR changes, as a nested bullet under its line.
+        func about(_ e: Entry) -> [String] { e.implementation.map { ["  - \($0)"] } ?? [] }
 
         var out = ["**PR reviews: \(title)**", ""]
         var line = "\(reviews.count) review\(reviews.count == 1 ? "" : "s") posted: \(approved) approved, \(changesRequested) changes requested."
@@ -187,6 +189,7 @@ struct Recap {
                 var bits = ["\(Recap.path(m.entry)) in \(n) round\(n == 1 ? "" : "s")"]
                 if let risk = m.entry.mergeRisk { bits.append("\(risk) merge risk") }
                 out.append("- \(link(m.entry)) \(m.entry.title ?? "")\(by(m.entry)): \(bits.joined(separator: ", "))")
+                out += about(m.entry)
             }
         }
         if !open.isEmpty {
@@ -194,12 +197,14 @@ struct Recap {
             for o in open {
                 let verdict = Verdict(o.last.round.verdict).label.lowercased()
                 out.append("- \(link(o.entry)) \(o.entry.title ?? "")\(by(o.entry)): \(verdict) \(Format.ago(o.last.at, now: now))")
+                out += about(o.entry)
             }
         }
         if !closed.isEmpty {
             out += ["", "Closed without merging:"]
             for c in closed {
                 out.append("- \(link(c.entry)) \(c.entry.title ?? "")\(by(c.entry))")
+                out += about(c.entry)
             }
         }
         return out.joined(separator: "\n")

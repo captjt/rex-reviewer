@@ -76,6 +76,7 @@ One entry per PR the tool has seen.
 | `reviewed_head` | the head the last posted review covered |
 | `verdict` | the last round's outcome: `APPROVED`, `CHANGES_REQUESTED`, or `DISMISSED` |
 | `merge_risk` | `low`, `medium`, or `high`, when assessed |
+| `implementation` | what the PR changes, in a sentence or two, from the last round's draft |
 | `review_url` | the posted review |
 | `outcome` | `merged` or `closed` once the PR ends; it stays after cleanup |
 | `ended_at` | when the watcher saw it merged or closed |

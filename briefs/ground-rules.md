@@ -55,6 +55,11 @@ non-blocking ones N1, N2, ….
 
 How the review reads: {{STYLE_GUIDE}}
 
+Also set `implementation`: one or two plain sentences, under 250
+characters, on what the PR changes and how it does it at this head. It's for
+{{LOGIN}}'s recap and is never posted, so leave your findings and verdict out
+of it. On a later round, rewrite it if the PR has changed.
+
 ## report.md
 
 This is for the checker, not the author. List what you checked, how you

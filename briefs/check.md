@@ -22,7 +22,8 @@ record why.
 4. Write `{{OUT}}/review.verified.json` in the format of `{{DRAFT_SCHEMA}}`.
    The reviewer's draft is already in that format, so edit it: the verdict,
    the bullets, the inline bodies, `plus_one` for points other reviewers
-   raised, and `replies` under {{LOGIN}}'s own earlier comments. How the
+   raised, and `replies` under {{LOGIN}}'s own earlier comments. Keep
+   `implementation`, and correct it if it misdescribes the change. How the
    review reads: {{STYLE_GUIDE}}
 {{MERGE_RISK_ADD}}
 {{POST_STEP}}

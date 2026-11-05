@@ -9,6 +9,7 @@ them; how the text reads is up to the `style` guide.
 {
   "event": "REQUEST_CHANGES",
   "verdict": "One or two sentences: what has to change and why, or why it's safe to merge.",
+  "implementation": "One or two sentences on what the PR changes and how. For the recap; never posted.",
   "findings": [
     {
       "id": "B1",

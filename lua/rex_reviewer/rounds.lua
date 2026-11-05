@@ -443,6 +443,13 @@ local function nudge_watcher()
   util.write_file(ledger.check_now_path(), "")
 end
 
+-- The draft's account of what the PR changes, on one line, for the recap.
+-- It's never posted.
+local function implementation(d)
+  local s = type(d.implementation) == "string" and util.trim(d.implementation:gsub("%s+", " ")) or ""
+  return s ~= "" and s or nil
+end
+
 -- Render the checked review with bin/post-review, and post it unless dry.
 -- The footer names the reviewer and the checker, with their models.
 function M.post(repo, pr, opts)
@@ -480,8 +487,9 @@ function M.post(repo, pr, opts)
     return { dry_run = true, preview = res.stdout, preview_path = out .. "/preview.md" }
   end
   local posted = util.decode(res.stdout) or {}
+  local checked = util.decode(util.read_file(draft)) or {}
   local blocking, non_blocking = 0, 0
-  for _, f in ipairs((util.decode(util.read_file(draft)) or {}).findings or {}) do
+  for _, f in ipairs(checked.findings or {}) do
     if f.severity == "blocking" then
       blocking = blocking + 1
     else
@@ -491,6 +499,7 @@ function M.post(repo, pr, opts)
   rules.mark_posted(e, {
     head = e.round_head, verdict = posted.state, review_id = posted.review_id, url = posted.url,
     blocking = blocking, non_blocking = non_blocking, merge_risk = posted.merge_risk,
+    implementation = implementation(checked),
   }, util.now())
   e.merge_risk = posted.merge_risk
   ledger.save(e)
@@ -512,7 +521,13 @@ function M.dismiss(repo, pr)
   if e.state ~= "reviewing" then
     error(string.format("%s has no round in progress", ledger.label(e)), 0)
   end
-  rules.mark_posted(e, { head = e.round_head, verdict = "DISMISSED", by = "you" }, util.now())
+  -- The PR's description still holds when you dismiss the review, so keep
+  -- the checked draft's, or the reviewer's if the checker hasn't run.
+  local out = string.format("%s/.tmp/rounds/%d", e.worktree, e.round)
+  local d = util.decode(util.read_file(out .. "/review.verified.json") or util.read_file(out .. "/review.json")) or {}
+  rules.mark_posted(e, {
+    head = e.round_head, verdict = "DISMISSED", by = "you", implementation = implementation(d),
+  }, util.now())
   ledger.save(e)
   M.set_status(e, "DISMISSED")
   ledger.append_event({ kind = "dismissed", repo = repo, pr = pr, round = e.round, head = e.round_head })
