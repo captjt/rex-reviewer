@@ -23,6 +23,17 @@ return {
   reviewer = "codex",
   checker = "claude",
 
+  -- Or several reviewers side by side, each in its own worktree and pane,
+  -- blind to the others; the checker merges their drafts. The first is the
+  -- primary. Use reviewers or reviewer, not both. Up to four.
+  -- reviewers = {
+  --   { name = "codex", agent = "codex" },
+  --   { name = "claude", agent = "claude",
+  --     -- For this reviewer only: more agent arguments, and its own review guide.
+  --     extra_args = { "--model", "claude-opus-5-5" },
+  --     guides = { review = "~/.config/rex-reviewer/guides/deep-review.md" } },
+  -- },
+
   -- "ask": the checked review waits for you to post or dismiss it.
   -- "auto": the checker posts it, with a footer naming both agents.
   post = "ask",

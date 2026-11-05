@@ -31,8 +31,29 @@ function M.entry_path(repo, pr)
   return string.format("%s/repos/%s/pr-%d.json", dir(), repo, pr)
 end
 
+-- Entries written before 0.4 name one reviewer in reviewer, reviewer_session,
+-- and pane. They become that reviewer's record in reviewers, so its session
+-- resumes when the config's primary has the same name.
+local function upgrade(e)
+  if type(e) ~= "table" or type(e.reviewers) == "table" or not (e.reviewer_session or e.reviewer) then
+    return e
+  end
+  local name = e.reviewer or "codex"
+  local _, repo_name = util.split_slug(e.repo or "")
+  e.reviewers = {
+    [name] = {
+      name = name, agent = name, session = e.reviewer_session, primary = true, index = 1,
+      pane = string.format("%s-%d", repo_name or "pr", e.pr), worktree = e.worktree,
+    },
+  }
+  if e.state == "reviewing" then
+    e.round_reviewers = { name }
+  end
+  return e
+end
+
 function M.load(repo, pr)
-  return util.decode(util.read_file(M.entry_path(repo, pr)))
+  return upgrade(util.decode(util.read_file(M.entry_path(repo, pr))))
 end
 
 function M.save(e)

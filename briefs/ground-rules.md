@@ -24,6 +24,8 @@ names you and your model. You draft the review. You never post it.
 - If you can't go on without something you don't have, write
   `BLOCKED: <what you need>` to `.tmp/status.txt` and stop.
 
+{{PARALLEL}}
+
 ## Running code
 
 - Run tests, builds, and probes when they settle a question. Use the repo's

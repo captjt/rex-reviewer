@@ -4,10 +4,10 @@
 
 Agent code review for the GitHub PRs that request you, run in
 [Rex](https://www.superlogical.com/rex). When someone asks you to review a
-PR, a reviewer agent (Codex or Claude Code) reviews it in its own Rex tab,
-and a second agent (Claude Code) checks every finding against the code. You
-then post the checked review, or let it post on its own. Every review says
-which agents wrote it, on your behalf:
+PR, one or more reviewer agents (Codex, Claude Code, or both side by side)
+review it in its own Rex tab, and a checker (Claude Code) checks every
+finding against the code. You then post the checked review, or let it post
+on its own. Every review says which agents wrote it, on your behalf:
 
 ```markdown
 ---
@@ -29,18 +29,20 @@ tokens. A menu bar app shows what's happening.
 2. **Prep.** It checks the PR out into its own worktree, and fetches the
    description, diff, reviews, comments, and CI results into
    `.tmp/context/`, so the agents never call GitHub.
-3. **The reviewer** reviews the change in a new Rex tab, runs the tests and
-   probes it needs, and drafts the review. Later rounds resume the same
-   agent session, so it remembers the last round.
-4. **The checker**, a fresh Claude Code beside it, verifies every finding,
-   drops what it can't confirm, and assesses the merge risk.
+3. **The reviewers** review the change in a new Rex tab, run the tests and
+   probes they need, and each draft a review. With more than one, each works
+   in its own worktree and pane, blind to the others. Later rounds resume the
+   same agent sessions, so each remembers its last round.
+4. **The checker**, a fresh Claude Code beside them, starts once every
+   reviewer is done. It merges the drafts, verifies every finding, drops
+   what it can't confirm, and assesses the merge risk.
 5. **The post.** With `post = "ask"` (the default), the checked review waits
    for you: post it, preview it, or dismiss it from the menu bar. With
    `post = "auto"`, the checker posts it.
 6. **Later rounds.** A push with no re-request is only noted. A re-request
    starts the next round, which checks what changed. If the head moves
-   mid-round, the reviewer reviews the new commits first. When the PR merges
-   or closes, its tab, worktree, and refs are cleaned up.
+   mid-round, the reviewers review the new commits first. When the PR merges
+   or closes, its tab, worktrees, and refs are cleaned up.
 
 ## Requirements
 
@@ -91,11 +93,40 @@ return {
       notes = "Run `make test`; the e2e suite needs Docker, so skip it.",
     },
   },
-  reviewer = "codex",   -- or "claude"
+  reviewer = "codex",   -- or "claude", or several reviewers: see below
   post = "ask",         -- or "auto"
   max_rounds = 3,
 }
 ```
+
+### Reviewers: one or several
+
+`reviewer = "codex"` runs one reviewer. `reviewers` runs up to four side by
+side on every round, each in its own worktree and pane, without seeing the
+others' drafts. The checker merges their drafts, and records which reviewer
+found each finding (`found_by`), so you can see what each one adds:
+
+```lua
+reviewers = {
+  { name = "codex", agent = "codex" },          -- the first is the primary
+  { name = "claude", agent = "claude",
+    extra_args = { "--model", "claude-opus-5-5" },
+    guides = { review = "~/.config/rex-reviewer/guides/deep-review.md" } },
+},
+```
+
+- `name` labels the reviewer's pane and worktree: lowercase letters, digits,
+  and dashes, up to 12. `agent` is `codex` or `claude`.
+- `extra_args` adds to `agents.<agent>` for this reviewer only, and
+  `guides.review` replaces the review guide for it.
+- The primary keeps the PR's worktree (`pr-<n>`) and pane (`<repo>-<pr>`),
+  where the checker works. The others get `pr-<n>-<name>` and
+  `<repo>-<pr>-<name>`, split into the same tab. Each extra reviewer builds
+  in its own worktree, so it costs a build and its disk.
+- Every reviewer must finish before the checker starts. One that's blocked,
+  or whose pane closes, holds the round and asks for you.
+- Each round's history records, for each reviewer, the findings it drafted,
+  how many the checker kept, how many only it found, and its tokens.
 
 ### Guides: bring your own skills
 
@@ -146,9 +177,9 @@ add an adapter to [`lua/rex_reviewer/agents.lua`](lua/rex_reviewer/agents.lua).
 
 ## What the agents can do
 
-- Each PR gets its own git worktree, detached at the PR's head. Agents may
-  build and test there, and write to your package caches, but not commit or
-  push.
+- Each PR gets its own git worktree for each reviewer, detached at the PR's
+  head. Agents may build and test there, and write to your package caches,
+  but not commit or push.
 - `gh` is signed out in the agents' panes, so they can't reach GitHub. The
   posting script runs as a Rex action, outside their sandbox.
 - The checker may run the preview action. With `post = "auto"` it may also
@@ -238,6 +269,7 @@ docs/                    the ledger and the review draft
 ## Limits
 
 - The checker is Claude Code only for now.
+- Up to four reviewers a round, each with its own worktree and server port.
 - macOS only: the paths, the LaunchAgent, and the app assume it.
 - Only PRs that request you by name start a round; team requests don't.
 

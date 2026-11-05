@@ -65,8 +65,12 @@ local DEFAULTS = {
   hooks = {},
 }
 
-local REVIEWERS = { codex = true, claude = true }
+local AGENTS = { codex = true, claude = true }
 local POST_MODES = { ask = true, auto = true }
+
+-- Each reviewer gets its own server port, 10000 apart, so four fit below
+-- 65536.
+M.MAX_REVIEWERS = 4
 
 local loaded
 
@@ -118,6 +122,70 @@ local function normalize_repos(repos)
   return out, by_slug
 end
 
+-- The reviewers, primary first. `reviewer = "codex"` is the one-reviewer
+-- form of `reviewers = { { name = "codex", agent = "codex" } }`, and a bare
+-- string in the list is a reviewer named after its agent.
+local function normalize_reviewers(user)
+  local list = user.reviewers
+  if list ~= nil and user.reviewer ~= nil then
+    fail("set reviewers or reviewer, not both")
+  end
+  if list == nil then
+    list = { user.reviewer or "codex" }
+  end
+  if type(list) ~= "table" or #list == 0 then
+    fail("reviewers must be a list of one or more, such as { { name = \"codex\", agent = \"codex\" } }")
+  end
+  if #list > M.MAX_REVIEWERS then
+    fail(string.format("reviewers can list up to %d agents", M.MAX_REVIEWERS))
+  end
+  local out, by_name = {}, {}
+  for i, r in ipairs(list) do
+    if type(r) == "string" then
+      r = { agent = r }
+    end
+    if type(r) ~= "table" then
+      fail(string.format("reviewers[%d] must be a table, such as { name = \"codex\", agent = \"codex\" }", i))
+    end
+    local agent = r.agent or r.name
+    if not AGENTS[agent] then
+      fail(string.format("reviewers[%d].agent must be \"codex\" or \"claude\", not %s", i, tostring(agent)))
+    end
+    local name = r.name or agent
+    if type(name) ~= "string" or #name > 12 or not name:match("^[a-z][a-z0-9-]*$") then
+      fail(string.format("reviewers[%d].name must be up to 12 lowercase letters, digits, or dashes, starting with a letter, not %s", i, tostring(name)))
+    end
+    if name == "check" then
+      fail("no reviewer can be named check: the checker's pane uses it")
+    end
+    if by_name[name] then
+      fail("two reviewers are named " .. name)
+    end
+    if r.extra_args ~= nil and type(r.extra_args) ~= "table" then
+      fail("reviewers." .. name .. ".extra_args must be a list")
+    end
+    if r.guides ~= nil and type(r.guides) ~= "table" then
+      fail("reviewers." .. name .. ".guides must be a table")
+    end
+    for slot in pairs(r.guides or {}) do
+      if slot ~= "review" then
+        fail("reviewers." .. name .. ".guides." .. tostring(slot) .. " isn't a reviewer's guide slot; the only one is review")
+      end
+    end
+    local rec = {
+      name = name,
+      agent = agent,
+      index = i,
+      primary = i == 1,
+      extra_args = r.extra_args or {},
+      guides = r.guides or {},
+    }
+    out[i] = rec
+    by_name[name] = rec
+  end
+  return out, by_name
+end
+
 -- Load and check the config once per Lua state.
 function M.load()
   if loaded then
@@ -144,9 +212,9 @@ function M.load()
   end
   c.repo_list, c.repos = normalize_repos(user.repos)
 
-  if not REVIEWERS[c.reviewer] then
-    fail("reviewer must be \"codex\" or \"claude\", not " .. tostring(c.reviewer))
-  end
+  c.reviewer_list, c.reviewers_by_name = normalize_reviewers(user)
+  -- The primary's agent, for code that names one reviewer.
+  c.reviewer = c.reviewer_list[1].agent
   if c.checker ~= "claude" then
     fail("checker must be \"claude\"; it's the only checker so far")
   end
@@ -195,9 +263,17 @@ end
 
 -- What a guide slot says for this repo and PR, as text for a brief: an
 -- instruction to read a file, the instructions themselves, or nil for none.
-function M.guide(repo, slot, pr)
+-- A reviewer's own guide (reviewers[i].guides) comes first, then the repo's,
+-- then the global one.
+function M.guide(repo, slot, pr, reviewer)
   local c = M.load()
-  local v = repo.guides[slot]
+  local v
+  if reviewer and reviewer.guides then
+    v = reviewer.guides[slot]
+  end
+  if v == nil then
+    v = repo.guides[slot]
+  end
   if v == nil then
     v = c.guides[slot]
   end

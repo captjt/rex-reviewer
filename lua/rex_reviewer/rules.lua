@@ -98,6 +98,22 @@ function M.flat_tokens(t)
   return out
 end
 
+-- Add one bin/token-usage result t into sum, agent by agent, as when a PR's
+-- agents ran in several worktrees. Returns sum.
+function M.add_tokens(sum, t)
+  for agent, counts in pairs(t or {}) do
+    if type(counts) == "table" then
+      local into = sum[agent] or {}
+      for _, k in ipairs(M.TOKEN_FIELDS) do
+        into[k] = (into[k] or 0) + (counts[k] or 0)
+      end
+      sum[agent] = into
+    end
+  end
+  sum.total = (sum.total or 0) + ((t or {}).total or 0)
+  return sum
+end
+
 -- What after adds to before, count by count, as flat_tokens gives them.
 function M.token_delta(before, after)
   local out = {}
@@ -143,6 +159,7 @@ function M.mark_posted(e, fields, now)
     non_blocking = fields.non_blocking,
     merge_risk = fields.merge_risk,
     tokens = round_tokens,
+    reviewers = fields.reviewers,
   }
   return e
 end

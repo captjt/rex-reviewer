@@ -1,14 +1,22 @@
--- A round, step by step: prep the worktree and context, start the reviewer,
--- start the checker, follow a moved head, post or dismiss, and clean up.
+-- A round, step by step: prep the worktrees and context, start the
+-- reviewers, start the checker, follow a moved head, post or dismiss, and
+-- clean up.
 --
--- .tmp/status.txt in the worktree carries the round's state:
+-- A round runs every reviewer in the config, each in its own worktree and
+-- pane, blind to the others. The first is the primary: its worktree is the
+-- PR's (e.worktree, pr-<n>) and its pane is <repo>-<pr>, as with one
+-- reviewer. Each other reviewer gets pr-<n>-<name> and <repo>-<pr>-<name>.
+-- The checker starts once every reviewer is done, in the primary's worktree.
+--
+-- .tmp/status.txt in each reviewer's worktree carries that reviewer's state,
+-- and the primary's carries the round's:
 --   WORKING …            the reviewer is reviewing
---   READY_TO_POST        the reviewer is done; the checker starts next
+--   READY_TO_POST        the reviewer is done; the checker starts when all are
 --   VERIFYING …          the checker is checking
 --   AWAITING_APPROVAL    post = "ask": checked, and waiting for you
 --   POSTED <url>         posted; the tabs close
 --   DISMISSED            you dismissed it; the tabs close
---   HEAD_MOVED           the post was refused; the reviewer gets the new commits
+--   HEAD_MOVED           the post was refused; the reviewers get the new commits
 --   BLOCKED: <why>       an agent stopped and needs you
 
 local util = require("rex_reviewer.util")
@@ -27,9 +35,11 @@ local function rex_agent(args)
   return util.append(argv, args)
 end
 
-function M.reviewer_pane(e)
-  local _, name = util.split_slug(e.repo)
-  return string.format("%s-%d", name, e.pr)
+-- The pane of the primary reviewer, or of the reviewer named.
+function M.reviewer_pane(e, name)
+  local _, repo_name = util.split_slug(e.repo)
+  local pane = string.format("%s-%d", repo_name, e.pr)
+  return name and (pane .. "-" .. name) or pane
 end
 
 function M.checker_pane(e)
@@ -56,12 +66,14 @@ function M.close_pane(session, name)
   end
 end
 
-function M.set_status(e, s)
-  util.write_file(e.worktree .. "/.tmp/status.txt", s .. "\n")
+-- The status in a worktree: the primary's (the round's) unless wt is given.
+function M.set_status(e, s, wt)
+  util.write_file((wt or e.worktree) .. "/.tmp/status.txt", s .. "\n")
 end
 
-function M.status(e)
-  local s = e.worktree and util.read_file(e.worktree .. "/.tmp/status.txt") or ""
+function M.status(e, wt)
+  wt = wt or e.worktree
+  local s = wt and util.read_file(wt .. "/.tmp/status.txt") or ""
   return util.trim(s:match("^[^\n]*") or "")
 end
 
@@ -71,6 +83,86 @@ local function load(repo, pr)
     error(string.format("%s#%d isn't in the ledger", repo, pr), 0)
   end
   return e
+end
+
+---------------------------------------------------------------------------
+-- Worktrees and reviewers
+
+-- The primary reviewer's worktree, which is the PR's, or the named
+-- reviewer's beside it.
+function M.worktree_path(e, name)
+  local wt = string.format("%s/worktrees/%s/pr-%d", config.DATA_DIR, e.repo, e.pr)
+  return name and (wt .. "-" .. name) or wt
+end
+
+-- The reviewers of the round in progress, or of the next round, primary
+-- first. Each is its record in e.reviewers, which keeps its session across
+-- rounds: { name, agent, index, primary, worktree, pane, session, … }. A
+-- round in progress keeps the reviewers it started with; a new round takes
+-- the config's.
+function M.round_reviewers(e)
+  e.reviewers = type(e.reviewers) == "table" and e.reviewers or {}
+  local out = {}
+  if e.state == "reviewing" and type(e.round_reviewers) == "table" and #e.round_reviewers > 0 then
+    for _, name in ipairs(e.round_reviewers) do
+      if type(e.reviewers[name]) == "table" then
+        out[#out + 1] = e.reviewers[name]
+      end
+    end
+    if #out > 0 then
+      return out
+    end
+  end
+  -- A round in progress that doesn't list its reviewers ran only one.
+  local list = config.load().reviewer_list
+  if e.state == "reviewing" then
+    list = { list[1] }
+  end
+  for i, cr in ipairs(list) do
+    local r = e.reviewers[cr.name]
+    -- A reviewer whose agent changed starts over.
+    if type(r) ~= "table" or r.agent ~= cr.agent then
+      r = { agent = cr.agent }
+      e.reviewers[cr.name] = r
+    end
+    r.name, r.index, r.primary = cr.name, i, i == 1
+    r.worktree = M.worktree_path(e, not r.primary and cr.name or nil)
+    r.pane = M.reviewer_pane(e, not r.primary and cr.name or nil)
+    out[#out + 1] = r
+  end
+  return out
+end
+
+-- Every worktree the PR's agents have run in: the PR's own, then each
+-- other reviewer's, including ones from an earlier config.
+function M.worktrees(e)
+  local out, seen = {}, {}
+  local function add(p)
+    if type(p) == "string" and not seen[p] then
+      seen[p] = true
+      out[#out + 1] = p
+    end
+  end
+  add(e.worktree)
+  for _, p in ipairs(type(e.extra_worktrees) == "table" and e.extra_worktrees or {}) do
+    add(p)
+  end
+  for _, r in pairs(type(e.reviewers) == "table" and e.reviewers or {}) do
+    if type(r) == "table" then
+      add(r.worktree)
+    end
+  end
+  return out
+end
+
+local function remember_worktree(e, wt)
+  e.extra_worktrees = type(e.extra_worktrees) == "table" and e.extra_worktrees or {}
+  for _, p in ipairs(e.extra_worktrees) do
+    if p == wt then
+      return
+    end
+  end
+  e.extra_worktrees[#e.extra_worktrees + 1] = wt
 end
 
 ---------------------------------------------------------------------------
@@ -102,9 +194,14 @@ local function section(title, text)
   return "## " .. title .. "\n\n" .. util.trim(text) .. "\n"
 end
 
-function M.vars(e, round)
+-- The brief variables for the round, as one reviewer sees them when r is
+-- given (its port and review guide), or as the checker does.
+function M.vars(e, round, r)
   local c = config.load()
   local repo = c.repos[e.repo]
+  local rs = M.round_reviewers(e)
+  local index = r and r.index or 1
+  local own = r and c.reviewers_by_name[r.name] or nil
   local v = {
     ROOT = config.ROOT,
     REPO = e.repo,
@@ -121,11 +218,14 @@ function M.vars(e, round)
     PREV_HEAD_SHORT = util.short(e.reviewed_head),
     CONTEXT = string.format(".tmp/context/round-%d", round),
     OUT = string.format(".tmp/rounds/%d", round),
-    PORT = 20000 + (e.pr % 10000),
+    -- 10000 apart, so reviewers running servers at once don't collide.
+    PORT = 20000 + 10000 * (index - 1) + (e.pr % 10000),
     DRAFT_SCHEMA = config.ROOT .. "/docs/review-draft.md",
     REPO_NOTES = section("Notes for this repo", repo and repo.notes),
+    N = #rs,
+    PRIMARY = rs[1] and rs[1].name or c.reviewer,
   }
-  local review = repo and config.guide(repo, "review", e)
+  local review = repo and config.guide(repo, "review", e, own)
   v.REVIEW_GUIDE = review or util.trim(util.render(brief("parts/review-default.md"), v):gsub("%s*\n%s*", " "))
   local style = repo and config.guide(repo, "style", e)
   v.STYLE_GUIDE = style or "Write for the PR author, plainly and briefly."
@@ -136,6 +236,13 @@ function M.vars(e, round)
   v.MERGE_RISK_START = risk and util.render(brief("parts/merge-risk-start.md"), v) or ""
   v.MERGE_RISK_ADD = risk and util.render(brief("parts/merge-risk-add.md"), v) or ""
   v.POST_STEP = util.render(brief(c.post == "auto" and "parts/post-auto.md" or "parts/post-ask.md"), v)
+  v.PARALLEL = #rs > 1 and util.trim(util.render(brief("parts/parallel.md"), v)) or ""
+  local names = {}
+  for _, x in ipairs(rs) do
+    names[#names + 1] = '"' .. x.name .. '"'
+  end
+  v.FOUND_BY_EXAMPLE = "`[" .. table.concat(names, ", ") .. "]`"
+  v.THE_REVIEWERS = #rs > 1 and "the reviewers" or "the reviewer"
   return v
 end
 
@@ -145,11 +252,8 @@ function M.merge_risk_enabled(e)
 end
 
 ---------------------------------------------------------------------------
--- Prep: the worktree at the head, and the context the agents read.
-
-function M.worktree_path(e)
-  return string.format("%s/worktrees/%s/pr-%d", config.DATA_DIR, e.repo, e.pr)
-end
+-- Prep: every reviewer's worktree at the head, and the context the agents
+-- read.
 
 local function round_ref(e, round)
   return string.format("refs/rex-reviewer/pr-%d/round-%d", e.pr, round)
@@ -179,6 +283,12 @@ function M.pickup(repo, pr)
   return e
 end
 
+local function copy_dir(src, dst)
+  util.run({ "rm", "-rf", dst })
+  util.mkdirp(dst:match("^(.*)/[^/]+$"))
+  util.run({ "cp", "-R", src, dst })
+end
+
 function M.prep(repo, pr)
   local e = load(repo, pr)
   if ledger.FINISHED[e.state] then
@@ -186,7 +296,6 @@ function M.prep(repo, pr)
   end
   local checkout = config.load().repos[repo].checkout
   local round = e.state == "reviewing" and e.round or e.round + 1
-  local wt = M.worktree_path(e)
   local ref = round_ref(e, round)
   local git = function(args, opts)
     return util.run(util.append({ "git", "-C", checkout }, args), opts)
@@ -194,12 +303,19 @@ function M.prep(repo, pr)
 
   git({ "fetch", "--no-tags", "--quiet", "origin", string.format("+refs/pull/%d/head:%s", pr, ref) })
   local head = util.trim(git({ "rev-parse", ref }).stdout)
-  if util.exists(wt .. "/.git") then
-    util.run({ "git", "-C", wt, "checkout", "--detach", "--quiet", head })
-  else
-    util.mkdirp(wt:match("^(.*)/[^/]+$"))
-    git({ "worktree", "add", "--detach", "--quiet", wt, head })
+  local rs = M.round_reviewers(e)
+  for _, r in ipairs(rs) do
+    if util.exists(r.worktree .. "/.git") then
+      util.run({ "git", "-C", r.worktree, "checkout", "--detach", "--quiet", head })
+    else
+      util.mkdirp(r.worktree:match("^(.*)/[^/]+$"))
+      git({ "worktree", "add", "--detach", "--quiet", r.worktree, head })
+    end
+    if not r.primary then
+      remember_worktree(e, r.worktree)
+    end
   end
+  local wt = rs[1].worktree
 
   local ctx = string.format("%s/.tmp/context/round-%d", wt, round)
   util.mkdirp(ctx)
@@ -222,6 +338,11 @@ function M.prep(repo, pr)
     moved_from = e.round_head
     util.write_file(ctx .. "/delta-head.diff", git({ "diff", moved_from, head }).stdout)
     util.write_file(ctx .. "/delta-head-commits.txt", git({ "log", "--oneline", moved_from .. ".." .. head }).stdout)
+  end
+
+  -- The other reviewers get the same context; agents never call GitHub.
+  for i = 2, #rs do
+    copy_dir(ctx, string.format("%s/.tmp/context/round-%d", rs[i].worktree, round))
   end
 
   e.worktree = wt
@@ -265,11 +386,11 @@ end
 
 -- Agents run with gh signed out: everything they need from GitHub is in
 -- .tmp/context, and only the tool's own actions post.
-local function env_args(e)
-  util.mkdirp(e.worktree .. "/.tmp/gh-empty")
+local function env_args(wt)
+  util.mkdirp(wt .. "/.tmp/gh-empty")
   return {
     "-u", "GH_TOKEN", "-u", "GITHUB_TOKEN",
-    "GH_CONFIG_DIR=" .. e.worktree .. "/.tmp/gh-empty",
+    "GH_CONFIG_DIR=" .. wt .. "/.tmp/gh-empty",
     "CARGO_HOME=" .. cargo_home(),
   }
 end
@@ -294,24 +415,32 @@ function M.deliver(name, session, prompt)
   error(name .. " stayed busy and never took its task", 0)
 end
 
--- Open the PR's reviewer in a new tab, resuming its session if it has one,
--- and send it the prompt. Returns the session ID.
-local function open_reviewer(e, session, prompt)
-  local adapter = agents.reviewer()
-  local name = M.reviewer_pane(e)
-  local argv = rex_agent({ "start", name, "-s", session, "--tab", "--cwd", e.worktree, "--timeout", "180", "--kind", "env", "--" })
-  util.append(argv, env_args(e))
-  util.append(argv, adapter:command(e, writable_dirs(e)))
+-- Open a reviewer, resuming its session if it has one, and send it the
+-- prompt: in a new tab, or split beside anchor (the primary's block).
+-- Returns the session ID.
+local function open_reviewer(e, r, session, prompt, anchor)
+  local adapter = agents.reviewers[r.agent]
+  local own = config.load().reviewers_by_name[r.name]
+  local argv = rex_agent({ "start", r.pane, "-s", session, "--cwd", r.worktree, "--timeout", "180", "--kind", "env" })
+  if anchor then
+    util.append(argv, { "--anchor", anchor })
+  else
+    argv[#argv + 1] = "--tab"
+  end
+  argv[#argv + 1] = "--"
+  util.append(argv, env_args(r.worktree))
+  local since = os.time()
+  util.append(argv, adapter:command(e, r, writable_dirs(e), own and own.extra_args or {}))
   local res = util.run(argv, { check = false })
   if not res.ok then
-    M.close_pane(session, name)
+    M.close_pane(session, r.pane)
     if ((res.stdout or "") .. (res.stderr or "")):find("Hooks need review", 1, true) then
       error("Codex is waiting for its hooks to be trusted. Run codex once, open /hooks, and trust them; the round retries on its own.", 0)
     end
-    error(adapter.program .. " didn't start: " .. util.trim(res.stderr):sub(1, 300), 0)
+    error(string.format("the %s reviewer (%s) didn't start: %s", r.name, adapter.program, util.trim(res.stderr):sub(1, 300)), 0)
   end
-  M.deliver(name, session, prompt)
-  return adapter:session_after_start(e)
+  M.deliver(r.pane, session, prompt)
+  return adapter:session_after_start(r, since)
 end
 
 function M.start(repo, pr, session)
@@ -326,29 +455,131 @@ function M.start(repo, pr, session)
   if not session then
     error("start needs a Rex session; run scripts/start.lua with rex do", 0)
   end
-  local vars = M.vars(e, round)
-  util.mkdirp(e.worktree .. "/" .. vars.OUT)
-  util.mkdirp(e.worktree .. "/.tmp/probes")
-  util.write_file(e.worktree .. "/.tmp/ground-rules.md", util.render(brief("ground-rules.md"), vars))
-  util.write_file(e.worktree .. "/" .. vars.OUT .. "/task.md", util.render(brief(round == 1 and "round-1.md" or "round-n.md"), vars))
-  M.set_status(e, "WORKING round " .. round)
+  local rs = M.round_reviewers(e)
+  for _, r in ipairs(rs) do
+    if not util.exists(r.worktree .. "/.git") then
+      error(string.format("%s: run reviewer_prep for round %d first; the %s reviewer has no worktree", ledger.label(e), round, r.name), 0)
+    end
+  end
 
-  local id = open_reviewer(e, session, string.format("Read .tmp/ground-rules.md, then %s/task.md, and do the task.", vars.OUT))
+  -- Each reviewer gets its task in its own worktree. One that's new to the
+  -- PR reviews it whole; the others pick up from their last round. If any
+  -- fails to start, every pane this attempt opened closes, and nothing is
+  -- saved, so the retry starts clean.
+  local opened = {}
+  local ok, err = pcall(function()
+    local anchor
+    for _, r in ipairs(rs) do
+      local vars = M.vars(e, round, r)
+      local wt = r.worktree
+      util.mkdirp(wt .. "/" .. vars.OUT)
+      util.mkdirp(wt .. "/.tmp/probes")
+      util.write_file(wt .. "/.tmp/ground-rules.md", util.render(brief("ground-rules.md"), vars))
+      local fresh = round == 1 or not r.session
+      util.write_file(wt .. "/" .. vars.OUT .. "/task.md", util.render(brief(fresh and "round-1.md" or "round-n.md"), vars))
+      M.set_status(e, "WORKING round " .. round, wt)
+      if not r.session then
+        r.first_round = round
+        r.tokens_seen = nil
+      end
+      r.session = open_reviewer(e, r, session, string.format("Read .tmp/ground-rules.md, then %s/task.md, and do the task.", vars.OUT), anchor)
+      opened[#opened + 1] = r.pane
+      if not anchor then
+        local _, block = M.pane_state(session, r.pane)
+        anchor = block
+      end
+    end
+  end)
+  if not ok then
+    for _, name in ipairs(opened) do
+      M.close_pane(session, name)
+    end
+    error(err, 0)
+  end
 
   rules.mark_started(e, e.round_head, util.now())
-  e.reviewer = config.load().reviewer
-  e.reviewer_session = id
-  e.pane = M.reviewer_pane(e)
+  local names, panes = {}, {}
+  for _, r in ipairs(rs) do
+    names[#names + 1] = r.name
+    panes[#panes + 1] = r.pane
+  end
+  e.round_reviewers = names
+  e.reviewers_total, e.reviewers_done = #rs, 0
+  -- The primary's, for readers that know one reviewer.
+  e.reviewer = rs[1].agent
+  e.reviewer_session = rs[1].session
+  e.pane = rs[1].pane
   e.phase = "reviewer"
   e.session_id = session
   e.start_error, e.start_failed_epoch = nil, nil
   ledger.save(e)
-  ledger.append_event({ kind = "started", repo = repo, pr = pr, round = round, head = e.round_head })
-  return { repo = repo, pr = pr, round = round, pane = e.pane, session = id, worktree = e.worktree }
+  ledger.append_event({
+    kind = "started", repo = repo, pr = pr, round = round, head = e.round_head,
+    note = #rs > 1 and (#rs .. " reviewers: " .. table.concat(names, ", ")) or nil,
+  })
+  return { repo = repo, pr = pr, round = round, pane = e.pane, panes = panes, session = rs[1].session, worktree = e.worktree }
+end
+
+-- Where the round's reviewers are: how many are done, the first that's
+-- blocked, and the first whose pane closed while it was working.
+function M.progress(e, session)
+  local rs = M.round_reviewers(e)
+  local p = { total = #rs, done = 0 }
+  for _, r in ipairs(rs) do
+    local st = M.status(e, r.worktree)
+    local pane = M.pane_state(session, r.pane)
+    if st:match("^BLOCKED") then
+      p.blocked = p.blocked or { name = r.name, why = (st:gsub("^BLOCKED:?%s*", "")) }
+    elseif st == "READY_TO_POST" and pane ~= "working" then
+      p.done = p.done + 1
+    elseif st:match("^WORKING") and not pane then
+      p.closed = p.closed or r.name
+    end
+  end
+  p.ready = p.total > 0 and p.done == p.total
+  return p
+end
+
+-- How check.md introduces the drafts: one reviewer's, or each reviewer's
+-- with where its probes and builds are.
+local function drafts_intro(rs, vars)
+  if #rs == 1 then
+    return string.format("A reviewer reviewed head %s in this worktree and drafted `%s/review.json` and `%s/report.md`.", vars.HEAD, vars.OUT, vars.OUT),
+      string.format("`%s/review.json`, `%s/report.md`", vars.OUT, vars.OUT)
+  end
+  local lines = { string.format("%d reviewers reviewed head %s, each on its own in its own worktree, and each drafted a review:", #rs, vars.HEAD), "" }
+  for _, r in ipairs(rs) do
+    local program = agents.reviewers[r.agent] and agents.reviewers[r.agent].program or r.agent
+    if r.primary then
+      lines[#lines + 1] = string.format("- `%s` (%s), in this worktree: `%s/review.json` and `%s/report.md`.", r.name, program, vars.OUT, vars.OUT)
+    else
+      lines[#lines + 1] = string.format("- `%s` (%s), in `%s`: copied to `%s/reviewers/%s/review.json` and `report.md`. Its probes and builds are in its worktree.", r.name, program, r.worktree, vars.OUT, r.name)
+    end
+  end
+  return table.concat(lines, "\n"), "each draft and report above"
 end
 
 function M.start_checker(e, session)
   local vars = M.vars(e, e.round)
+  local rs = M.round_reviewers(e)
+  -- The other reviewers' drafts, next to the primary's, and their worktrees,
+  -- where the checker reruns their probes.
+  local dirs = {}
+  for _, r in ipairs(rs) do
+    if not r.primary then
+      local src = r.worktree .. "/" .. vars.OUT
+      local dst = e.worktree .. "/" .. vars.OUT .. "/reviewers/" .. r.name
+      util.mkdirp(dst)
+      for _, f in ipairs({ "review.json", "report.md" }) do
+        if util.exists(src .. "/" .. f) then
+          util.run({ "cp", "-f", src .. "/" .. f, dst .. "/" .. f })
+        end
+      end
+      dirs[#dirs + 1] = r.worktree
+    end
+  end
+  vars.DRAFTS, vars.DRAFT_FILES = drafts_intro(rs, vars)
+  vars.MERGE_DRAFTS = #rs > 1 and util.render(brief("parts/merge-drafts.md"), vars) or ""
   util.write_file(e.worktree .. "/" .. vars.OUT .. "/check.md", util.render(brief("check.md"), vars))
   if M.merge_risk_enabled(e) then
     util.write_file(e.worktree .. "/" .. vars.OUT .. "/merge-risk.md", util.render(brief("merge-risk.md"), vars))
@@ -364,8 +595,8 @@ function M.start_checker(e, session)
     argv[#argv + 1] = "--tab"
   end
   argv[#argv + 1] = "--"
-  util.append(argv, env_args(e))
-  util.append(argv, agents.checker_command(e))
+  util.append(argv, env_args(e.worktree))
+  util.append(argv, agents.checker_command(e, dirs))
   local res = util.run(argv, { check = false })
   if not res.ok then
     M.close_pane(session, name)
@@ -374,6 +605,7 @@ function M.start_checker(e, session)
   M.deliver(name, session, string.format("Read %s/check.md and do it.", vars.OUT))
   e.phase = "checking"
   e.checker_pane = name
+  e.reviewers_done = #rs
   ledger.save(e)
   ledger.append_event({ kind = "checking", repo = e.repo, pr = e.pr, round = e.round, head = e.round_head })
 end
@@ -397,27 +629,38 @@ function M.same_pr_diff(e, old, new)
   return pr_diff(e, old) == pr_diff(e, new)
 end
 
+-- Send every reviewer the new commits, reopening any whose pane is gone.
 function M.send_delta(e, session, moved_from)
-  local vars = M.vars(e, e.round)
-  vars.MOVED_FROM = moved_from
-  vars.MOVED_FROM_SHORT = util.short(moved_from)
-  local task = string.format("%s/delta-%s.md", vars.OUT, util.short(e.round_head))
-  util.write_file(e.worktree .. "/" .. task, util.render(brief("delta.md"), vars))
-  M.set_status(e, "WORKING round " .. e.round .. " delta")
-  local prompt = string.format("The PR's head moved while you reviewed. Read %s and do it.", task)
-  if M.pane_state(session, e.pane) then
-    util.run(rex_agent({ "prompt", e.pane, "-s", session, "--force", prompt }))
-  else
-    e.reviewer_session = open_reviewer(e, session, prompt)
-    e.pane = M.reviewer_pane(e)
+  local rs = M.round_reviewers(e)
+  local anchor
+  for _, r in ipairs(rs) do
+    local vars = M.vars(e, e.round, r)
+    vars.MOVED_FROM = moved_from
+    vars.MOVED_FROM_SHORT = util.short(moved_from)
+    local task = string.format("%s/delta-%s.md", vars.OUT, util.short(e.round_head))
+    util.write_file(r.worktree .. "/" .. task, util.render(brief("delta.md"), vars))
+    M.set_status(e, "WORKING round " .. e.round .. " delta", r.worktree)
+    local prompt = string.format("The PR's head moved while you reviewed. Read %s and do it.", task)
+    if M.pane_state(session, r.pane) then
+      util.run(rex_agent({ "prompt", r.pane, "-s", session, "--force", prompt }))
+    else
+      r.session = open_reviewer(e, r, session, prompt, anchor)
+    end
+    if not anchor then
+      local _, block = M.pane_state(session, r.pane)
+      anchor = block
+    end
   end
+  e.reviewer_session = rs[1].session
+  e.pane = rs[1].pane
+  e.reviewers_done = 0
   e.phase = "reviewer"
   ledger.save(e)
   ledger.append_event({ kind = "delta", repo = e.repo, pr = e.pr, round = e.round, head = e.round_head, from = moved_from })
 end
 
 -- The head moved past the round's head: check again when only the base came
--- in, otherwise send the reviewer the new commits. Returns what it did.
+-- in, otherwise send the reviewers the new commits. Returns what it did.
 function M.follow_head(e, session, head)
   local same = M.same_pr_diff(e, e.round_head, head)
   local r = M.prep(e.repo, e.pr)
@@ -450,18 +693,72 @@ local function implementation(d)
   return s ~= "" and s or nil
 end
 
--- What the agents have spent on the PR so far, from their own logs. Nil
--- when bin/token-usage can't tell.
-local function tokens_spent(e)
+-- What the agents have logged in each of the PR's worktrees, by worktree,
+-- from bin/token-usage. A worktree it can't read is left out.
+local function usage_by_worktree(e)
+  local out = {}
   if not e.worktree then
-    return nil
+    return out
   end
-  local res = util.run({ config.ROOT .. "/bin/token-usage", e.worktree }, { check = false })
-  return res.ok and util.decode(res.stdout) or nil
+  for _, wt in ipairs(M.worktrees(e)) do
+    local res = util.run({ config.ROOT .. "/bin/token-usage", wt }, { check = false })
+    out[wt] = res.ok and util.decode(res.stdout) or nil
+  end
+  return out
+end
+
+-- What the agents have spent on the PR so far, summed over its worktrees.
+-- Nil when bin/token-usage can't tell.
+local function tokens_spent(by_wt)
+  local sum, any = { total = 0 }, false
+  for _, t in pairs(by_wt) do
+    rules.add_tokens(sum, t)
+    any = true
+  end
+  return any and sum or nil
+end
+
+-- Each reviewer's part in the round, for the history: the findings it
+-- drafted and, from found_by in the checked review when there is one, how
+-- many the checker kept and how many only it found. tokens is what its
+-- agent logged in its worktree this round; the primary's includes the
+-- checker's when both are Claude Code. Updates each record's tokens_seen.
+local function scoreboard(e, rs, checked, by_wt)
+  local board = {}
+  for _, r in ipairs(rs) do
+    local d = util.decode(util.read_file(string.format("%s/.tmp/rounds/%d/review.json", r.worktree, e.round)) or "") or {}
+    local s = { drafted = type(d.findings) == "table" and #d.findings or 0 }
+    if checked then
+      s.kept, s.only = 0, 0
+    end
+    local t = by_wt[r.worktree]
+    local spent = t and type(t[r.agent]) == "table" and t[r.agent].total or nil
+    if spent then
+      if r.tokens_seen then
+        s.tokens = math.max(0, spent - r.tokens_seen)
+      elseif r.first_round == e.round then
+        s.tokens = spent
+      end
+      r.tokens_seen = spent
+    end
+    board[r.name] = s
+  end
+  for _, f in ipairs(checked and type(checked.findings) == "table" and checked.findings or {}) do
+    local by = type(f.found_by) == "table" and f.found_by or {}
+    for _, name in ipairs(by) do
+      if board[name] and board[name].kept then
+        board[name].kept = board[name].kept + 1
+      end
+    end
+    if #by == 1 and board[by[1]] and board[by[1]].only then
+      board[by[1]].only = board[by[1]].only + 1
+    end
+  end
+  return board
 end
 
 -- Render the checked review with bin/post-review, and post it unless dry.
--- The footer names the reviewer and the checker, with their models.
+-- The footer names the reviewers and the checker, with their models.
 function M.post(repo, pr, opts)
   opts = opts or {}
   local e = load(repo, pr)
@@ -473,10 +770,10 @@ function M.post(repo, pr, opts)
   if not util.exists(draft) then
     error("write " .. draft .. " first: the checked review, in the format of docs/review-draft.md", 0)
   end
-  local adapter = agents.reviewers[e.reviewer or config.load().reviewer]
+  local rs = M.round_reviewers(e)
   local argv = {
     config.ROOT .. "/bin/post-review", "--repo", repo, "--pr", tostring(pr), "--head", e.round_head,
-    "--by", adapter:name(e), "--checked-by", agents.checker_name(e),
+    "--by", agents.byline(rs), "--checked-by", agents.checker_name(e),
     "--marker", string.format("round=%d head=%s", e.round, e.round_head),
   }
   if M.merge_risk_enabled(e) then
@@ -506,10 +803,12 @@ function M.post(repo, pr, opts)
       non_blocking = non_blocking + 1
     end
   end
+  local by_wt = usage_by_worktree(e)
   rules.mark_posted(e, {
     head = e.round_head, verdict = posted.state, review_id = posted.review_id, url = posted.url,
     blocking = blocking, non_blocking = non_blocking, merge_risk = posted.merge_risk,
-    implementation = implementation(checked), tokens = tokens_spent(e),
+    implementation = implementation(checked), tokens = tokens_spent(by_wt),
+    reviewers = scoreboard(e, rs, checked, by_wt),
   }, util.now())
   e.merge_risk = posted.merge_risk
   ledger.save(e)
@@ -532,12 +831,14 @@ function M.dismiss(repo, pr)
     error(string.format("%s has no round in progress", ledger.label(e)), 0)
   end
   -- The PR's description still holds when you dismiss the review, so keep
-  -- the checked draft's, or the reviewer's if the checker hasn't run.
+  -- the checked draft's, or the primary reviewer's if the checker hasn't run.
   local out = string.format("%s/.tmp/rounds/%d", e.worktree, e.round)
-  local d = util.decode(util.read_file(out .. "/review.verified.json") or util.read_file(out .. "/review.json")) or {}
+  local verified = util.decode(util.read_file(out .. "/review.verified.json") or "")
+  local d = verified or util.decode(util.read_file(out .. "/review.json") or "") or {}
+  local by_wt = usage_by_worktree(e)
   rules.mark_posted(e, {
     head = e.round_head, verdict = "DISMISSED", by = "you", implementation = implementation(d),
-    tokens = tokens_spent(e),
+    tokens = tokens_spent(by_wt), reviewers = scoreboard(e, M.round_reviewers(e), verified, by_wt),
   }, util.now())
   ledger.save(e)
   M.set_status(e, "DISMISSED")
@@ -547,7 +848,48 @@ function M.dismiss(repo, pr)
 end
 
 ---------------------------------------------------------------------------
--- Cleanup after a merge or close
+-- Closing panes, and cleanup after a merge or close
+
+-- Close the checker's pane and every reviewer's.
+function M.close_panes(e, session)
+  if not session then
+    return
+  end
+  M.close_pane(session, e.checker_pane)
+  local seen = {}
+  local function close(name)
+    if name and not seen[name] then
+      seen[name] = true
+      M.close_pane(session, name)
+    end
+  end
+  close(e.pane)
+  for _, r in pairs(type(e.reviewers) == "table" and e.reviewers or {}) do
+    if type(r) == "table" then
+      close(r.pane)
+    end
+  end
+end
+
+local function remove_worktree(checkout, wt)
+  if not util.exists(wt .. "/.git") then
+    return
+  end
+  -- A base checkout an agent added under .tmp goes first.
+  local list = util.run({ "git", "-C", checkout, "worktree", "list", "--porcelain" }).stdout
+  for path in list:gmatch("worktree ([^\n]+)") do
+    if path ~= wt and path:sub(1, #wt + 1) == wt .. "/" then
+      util.run({ "git", "-C", checkout, "worktree", "remove", "--force", path }, { check = false })
+    end
+  end
+  util.run({ "git", "-C", checkout, "worktree", "remove", "--force", wt })
+  -- Claude Code's scratch folder for sessions started in the worktree.
+  local uid = util.trim(util.run({ "id", "-u" }).stdout)
+  local scratch = "/private/tmp/claude-" .. uid .. "/" .. (wt:gsub("[^%w]", "-"))
+  if util.exists(scratch) then
+    util.run({ "rm", "-rf", scratch }, { check = false })
+  end
+end
 
 function M.cleanup(repo, pr, session)
   local e = ledger.load(repo, pr)
@@ -557,35 +899,21 @@ function M.cleanup(repo, pr, session)
   local checkout = config.load().repos[repo].checkout
   -- The final count, while the agents' logs are all at hand: Codex
   -- compresses archived threads, and Claude Code deletes old transcripts.
-  e.tokens = tokens_spent(e) or e.tokens
-  if session then
-    M.close_pane(session, e.checker_pane)
-    M.close_pane(session, e.pane)
+  e.tokens = tokens_spent(usage_by_worktree(e)) or e.tokens
+  M.close_panes(e, session)
+  for _, wt in ipairs(M.worktrees(e)) do
+    remove_worktree(checkout, wt)
   end
-  if e.worktree and util.exists(e.worktree .. "/.git") then
-    -- A base checkout an agent added under .tmp goes first.
-    local list = util.run({ "git", "-C", checkout, "worktree", "list", "--porcelain" }).stdout
-    for path in list:gmatch("worktree ([^\n]+)") do
-      if path ~= e.worktree and path:sub(1, #e.worktree + 1) == e.worktree .. "/" then
-        util.run({ "git", "-C", checkout, "worktree", "remove", "--force", path }, { check = false })
-      end
-    end
-    util.run({ "git", "-C", checkout, "worktree", "remove", "--force", e.worktree })
-    util.run({ "git", "-C", checkout, "worktree", "prune" }, { check = false })
-    -- Claude Code's scratch folder for sessions started in the worktree.
-    local uid = util.trim(util.run({ "id", "-u" }).stdout)
-    local scratch = "/private/tmp/claude-" .. uid .. "/" .. (e.worktree:gsub("[^%w]", "-"))
-    if util.exists(scratch) then
-      util.run({ "rm", "-rf", scratch }, { check = false })
-    end
-  end
+  util.run({ "git", "-C", checkout, "worktree", "prune" }, { check = false })
   local refs = util.run({ "git", "-C", checkout, "for-each-ref", "--format=%(refname)", string.format("refs/rex-reviewer/pr-%d/", pr) }).stdout
   for ref in refs:gmatch("[^\n]+") do
     util.run({ "git", "-C", checkout, "update-ref", "-d", ref })
   end
-  local adapter = agents.reviewers[e.reviewer or config.load().reviewer]
-  if adapter and adapter.archive then
-    adapter:archive(e)
+  for _, r in pairs(type(e.reviewers) == "table" and e.reviewers or {}) do
+    local adapter = type(r) == "table" and agents.reviewers[r.agent]
+    if adapter and adapter.archive then
+      adapter:archive(r)
+    end
   end
   e.state = "cleaned"
   e.pane, e.checker_pane, e.phase = nil, nil, nil

@@ -1,6 +1,6 @@
 -- Agent adapters: how to start or resume each agent, find its session, and
 -- name it, with its model, for the review's footer. Adding an agent means
--- adding an adapter here.
+-- adding an adapter here, and to AGENTS in config.lua.
 
 local util = require("rex_reviewer.util")
 local config = require("rex_reviewer.config")
@@ -82,14 +82,17 @@ local function sql_quote(s)
   return "'" .. (s or ""):gsub("'", "''") .. "'"
 end
 
--- The newest top-level Codex thread whose cwd is this worktree. Subagent
--- threads share the cwd; their source is JSON, so they're skipped.
-function M.codex_thread(cwd)
+-- The newest top-level Codex thread whose cwd is this worktree, started at
+-- or after since (epoch seconds) when given, so a thread left by a failed
+-- start isn't taken for a new one. Subagent threads share the cwd; their
+-- source is JSON, so they're skipped.
+function M.codex_thread(cwd, since)
   local db = codex_db()
   if not db then
     return nil
   end
   local sql = "select id from threads where cwd = " .. sql_quote(cwd)
+    .. (since and (" and created_at >= " .. math.floor(since)) or "")
     .. " and archived = 0 and source not like '{%' order by created_at desc limit 1"
   local id = util.trim(util.run({ "sqlite3", "-readonly", db, sql }, { check = false }).stdout)
   return id ~= "" and id or nil
@@ -113,7 +116,9 @@ function M.codex_name(thread)
 end
 
 ---------------------------------------------------------------------------
--- Reviewers: one agent per PR, resumed every round.
+-- Reviewers: one agent per reviewer in the config, resumed every round. An
+-- adapter works on the reviewer's record r in the ledger entry's reviewers:
+-- its worktree, pane, and session. extra is the reviewer's own extra_args.
 
 M.reviewers = {}
 
@@ -128,31 +133,33 @@ M.reviewers.codex = {
     "--disable", "apps",
     "-c", 'plugins."github@openai-curated".enabled=false',
   },
-  command = function(self, e, dirs)
+  command = function(self, _, r, dirs, extra)
     local argv = { "codex" }
-    if e.reviewer_session then
-      util.append(argv, { "resume", e.reviewer_session })
+    if r.session then
+      util.append(argv, { "resume", r.session })
     end
     util.append(argv, args_for("codex", self.defaults))
+    util.append(argv, extra)
     add_dirs(argv, dirs)
-    return util.append(argv, { "-C", e.worktree })
+    return util.append(argv, { "-C", r.worktree })
   end,
-  -- Codex names its thread after the first prompt; find it by cwd.
-  session_after_start = function(_, e)
+  -- Codex names its thread after the first prompt; find it by cwd. Each
+  -- reviewer has its own worktree, so the cwd is the reviewer's.
+  session_after_start = function(_, r, since)
     for _ = 1, 15 do
-      local id = e.reviewer_session or M.codex_thread(e.worktree)
+      local id = r.session or M.codex_thread(r.worktree, since)
       if id then
         return id
       end
       util.run({ "sleep", "2" })
     end
   end,
-  name = function(_, e)
-    return M.codex_name(e.reviewer_session)
+  name = function(_, r)
+    return M.codex_name(r.session)
   end,
-  archive = function(_, e)
-    if e.reviewer_session then
-      util.run({ "codex", "archive", e.reviewer_session }, { check = false })
+  archive = function(_, r)
+    if r.session then
+      util.run({ "codex", "archive", r.session }, { check = false })
     end
   end,
 }
@@ -160,40 +167,61 @@ M.reviewers.codex = {
 M.reviewers.claude = {
   program = "claude",
   defaults = { "--permission-mode", "auto" },
-  command = function(self, e, dirs)
+  command = function(self, e, r, dirs, extra)
     local argv = { "claude" }
-    if e.reviewer_session then
-      util.append(argv, { "--resume", e.reviewer_session })
+    if r.session then
+      util.append(argv, { "--resume", r.session })
     else
-      e.reviewer_session = uuid()
-      util.append(argv, { "--session-id", e.reviewer_session })
+      r.session = uuid()
+      util.append(argv, { "--session-id", r.session })
     end
     util.append(argv, args_for("claude", self.defaults))
+    util.append(argv, extra)
     add_dirs(argv, dirs)
-    return util.append(argv, { "-n", string.format("rex-reviewer %s", e.repo .. "#" .. e.pr) })
+    local label = string.format("rex-reviewer %s#%d", e.repo, e.pr)
+    if not r.primary then
+      label = label .. " " .. r.name
+    end
+    return util.append(argv, { "-n", label })
   end,
-  session_after_start = function(_, e)
-    return e.reviewer_session
+  session_after_start = function(_, r)
+    return r.session
   end,
-  name = function(_, e)
-    return M.claude_name(e.worktree, e.reviewer_session)
+  name = function(_, r)
+    return M.claude_name(r.worktree, r.session)
   end,
 }
 
-function M.reviewer()
-  return M.reviewers[config.load().reviewer]
+-- The footer's byline for the reviewers, in order, without repeats:
+-- "Codex (GPT-6.1-Sol) and Claude Code (Opus 5.5)".
+function M.byline(rs)
+  local names, seen = {}, {}
+  for _, r in ipairs(rs) do
+    local adapter = M.reviewers[r.agent]
+    local n = adapter and adapter:name(r) or r.agent
+    if n and not seen[n] then
+      seen[n] = true
+      names[#names + 1] = n
+    end
+  end
+  if #names <= 1 then
+    return names[1] or "rex-reviewer"
+  end
+  return table.concat(names, ", ", 1, #names - 1) .. " and " .. names[#names]
 end
 
 ---------------------------------------------------------------------------
 -- The checker: a fresh Claude Code each round. It may run the preview
 -- action, and the post action only when post = "auto". Deny rules hold in
--- every permission mode.
+-- every permission mode. dirs are the other reviewers' worktrees, where
+-- their probes and builds are.
 
-function M.checker_command(e)
+function M.checker_command(e, dirs)
   local c = config.load()
   e.checker_session = uuid()
   local argv = { "claude", "--session-id", e.checker_session }
   util.append(argv, args_for("claude", { "--permission-mode", "auto" }))
+  add_dirs(argv, dirs)
   local allowed = { "Bash(rex do reviewer_preview:*)" }
   local denied = { "Bash(rex do reviewer_dismiss:*)" }
   if c.post == "auto" then

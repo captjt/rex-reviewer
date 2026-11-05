@@ -85,8 +85,7 @@ function M.advance(session, log)
         log(string.format("%s %s: cleaned up", label, e.state))
       elseif e.state == "posted" then
         if (e.pane or e.checker_pane) and rounds.pane_state(session, e.checker_pane) ~= "working" then
-          rounds.close_pane(session, e.checker_pane)
-          rounds.close_pane(session, e.pane)
+          rounds.close_panes(e, session)
           e.pane, e.checker_pane, e.phase = nil, nil, nil
           ledger.save(e)
           log(string.format("%s round %d %s; closed its tab", label, e.round, e.verdict or "ended"))
@@ -113,7 +112,29 @@ function M.advance(session, log)
       elseif e.state == "reviewing" then
         local st = rounds.status(e)
         local phase = e.phase or "reviewer"
-        if st:match("^BLOCKED") then
+        if phase == "reviewer" then
+          -- Every reviewer must finish before the checker starts. Each
+          -- reports in its own worktree's status.
+          local p = rounds.progress(e, session)
+          if e.reviewers_done ~= p.done or e.reviewers_total ~= p.total then
+            e.reviewers_done, e.reviewers_total = p.done, p.total
+            ledger.save(e)
+          end
+          local many = p.total > 1
+          if p.blocked then
+            needs(attention, e, "blocked", many and (p.blocked.name .. ": " .. p.blocked.why) or p.blocked.why)
+          elseif p.ready then
+            local head = github.live_head(e.repo, e.pr)
+            if head == e.round_head then
+              rounds.start_checker(e, session)
+              log(string.format("%s round %d: reviewed; the checker is checking", label, e.round))
+            else
+              log(string.format("%s round %d: head moved to %s; %s", label, e.round, util.short(head), rounds.follow_head(e, session, head)))
+            end
+          elseif p.closed then
+            needs(attention, e, "pane-closed", many and string.format("the %s reviewer's pane closed mid-round", p.closed) or "the reviewer's pane closed mid-round")
+          end
+        elseif st:match("^BLOCKED") then
           needs(attention, e, "blocked", (st:gsub("^BLOCKED:?%s*", "")))
         elseif st == "AWAITING_APPROVAL" then
           if phase ~= "awaiting" then
@@ -126,21 +147,11 @@ function M.advance(session, log)
           else
             needs(attention, e, "ready", "the checked review is ready to post")
           end
-        elseif phase == "reviewer" and st == "READY_TO_POST" and rounds.pane_state(session, e.pane) ~= "working" then
-          local head = github.live_head(e.repo, e.pr)
-          if head == e.round_head then
-            rounds.start_checker(e, session)
-            log(string.format("%s round %d: reviewed; the checker is checking", label, e.round))
-          else
-            log(string.format("%s round %d: head moved to %s; %s", label, e.round, util.short(head), rounds.follow_head(e, session, head)))
-          end
         elseif phase == "checking" and st == "HEAD_MOVED" then
           local head = github.live_head(e.repo, e.pr)
           log(string.format("%s round %d: head moved to %s; %s", label, e.round, util.short(head), rounds.follow_head(e, session, head)))
         elseif phase == "checking" and st:match("^VERIFYING") and not rounds.pane_state(session, e.checker_pane) then
           needs(attention, e, "pane-closed", "the checker's pane closed before it finished")
-        elseif phase == "reviewer" and st:match("^WORKING") and not rounds.pane_state(session, e.pane) then
-          needs(attention, e, "pane-closed", "the reviewer's pane closed mid-round")
         end
       end
     end)
@@ -279,8 +290,14 @@ function M.focus(repo, pr)
       error(string.format("%s#%d has no round in progress", repo, pr), 0)
     end
     sid = e.session_id or st.session_id
-    local names = e.phase == "reviewer" and { e.pane, e.checker_pane } or { e.checker_pane, e.pane }
-    for i = 1, 2 do
+    local names = {}
+    for _, r in ipairs(rounds.round_reviewers(e)) do
+      names[#names + 1] = r.pane
+    end
+    if e.checker_pane then
+      table.insert(names, e.phase == "reviewer" and #names + 1 or 1, e.checker_pane)
+    end
+    for i = 1, #names do
       local _, b = rounds.pane_state(sid, names[i])
       if b then
         bid, wid = block_window(sid, b)
@@ -323,6 +340,8 @@ function M.status()
       round = e.round,
       state = e.state,
       phase = e.state == "reviewing" and (e.phase or "reviewer") or nil,
+      reviewers_done = e.state == "reviewing" and e.reviewers_done or nil,
+      reviewers_total = e.state == "reviewing" and e.reviewers_total or nil,
       verdict = e.verdict,
       merge_risk = e.merge_risk,
       head = util.short(e.head),
@@ -347,9 +366,12 @@ function M.doctor()
   if not ok then
     return { ok = false, checks = checks }
   end
-  local programs = { "rex", "gh", "git", "jq", "perl", "uuidgen", c.reviewer, "claude" }
-  if c.reviewer == "codex" then
-    programs[#programs + 1] = "sqlite3"
+  local programs = { "rex", "gh", "git", "jq", "perl", "uuidgen", "claude" }
+  for _, r in ipairs(c.reviewer_list) do
+    programs[#programs + 1] = r.agent
+    if r.agent == "codex" then
+      programs[#programs + 1] = "sqlite3"
+    end
   end
   local seen = {}
   for _, p in ipairs(programs) do
@@ -372,7 +394,20 @@ function M.doctor()
         check(r.slug .. " guides." .. slot, false, tostring(g))
       end
     end
+    for _, rv in ipairs(c.reviewer_list) do
+      if rv.guides.review ~= nil then
+        local gok, g = pcall(config.guide, r, "review", { repo = r.slug, pr = 0 }, rv)
+        if not gok then
+          check(r.slug .. " reviewers." .. rv.name .. ".guides.review", false, tostring(g))
+        end
+      end
+    end
   end
+  local names = {}
+  for _, rv in ipairs(c.reviewer_list) do
+    names[#names + 1] = rv.name .. " (" .. rv.agent .. ")"
+  end
+  check("reviewers", true, table.concat(names, ", ") .. "; the first is the primary")
   local all = true
   for _, ch in ipairs(checks) do
     all = all and ch.ok

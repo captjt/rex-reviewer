@@ -84,9 +84,13 @@ One entry per PR the tool has seen.
 | `requested_at` | when the current or last round was requested (or picked up) |
 | `additions`, `deletions`, `changed_files` | the PR's size at the last prep |
 | `started_at`, `posted_at`, `cleaned_at`, `created_at`, `updated_at` | times |
-| `worktree` | the PR's worktree; `.tmp/status.txt` in it is the round's status |
-| `session_id`, `pane`, `checker_pane` | the Rex session and the agents' pane names |
-| `reviewer`, `reviewer_session`, `checker_session` | which agent reviewed, and the agents' session IDs |
+| `worktree` | the PR's worktree, the primary reviewer's; `.tmp/status.txt` in it is the round's status |
+| `session_id`, `pane`, `checker_pane` | the Rex session, the primary reviewer's pane, and the checker's |
+| `reviewer`, `reviewer_session`, `checker_session` | the primary reviewer's agent and session, and the checker's session |
+| `reviewers` | each reviewer's record, by name: `agent`, `session`, `worktree`, `pane`, `index` and `primary` (its place in the config), `first_round`, and `tokens_seen` (its agent's count in its worktree at the last round's end) |
+| `round_reviewers` | the names of the reviewers in the round in progress, primary first |
+| `reviewers_done`, `reviewers_total` | while `reviewing`: how many of the round's reviewers are done |
+| `extra_worktrees` | the other reviewers' worktrees, kept for cleanup and token counts |
 | `start_error` | why the last start failed |
 | `history` | one record per finished round, below |
 
@@ -95,18 +99,25 @@ Each `history` record: `round`, `trigger`, `head`, `verdict`, `review_id`,
 `requested_at`, `started_at`, `at` (when it posted or was dismissed),
 `blocking` and `non_blocking` (finding counts), `merge_risk`, and `tokens`:
 what the agents spent in the round, with the same five counts summed across
-agents. Records written before 0.2 have only the first six and `at`. The menu bar app's recap
+agents and worktrees. From 0.4, `reviewers` holds each reviewer's part, by
+name: `drafted` (findings in its draft), `kept` and `only` (findings in the
+checked review whose `found_by` names it, and names only it; absent when
+nothing was checked), and `tokens` (what its agent logged in its worktree
+in the round; the primary's includes the checker's when both are Claude
+Code). Records written before 0.2 have only the first six and `at`. The menu bar app's recap
 reads these records, with the `merged` and `closed` events in `events.jsonl`
 for entries that predate `outcome`.
 
 ### The round's status
 
-`<worktree>/.tmp/status.txt` holds one line:
+`<worktree>/.tmp/status.txt` holds one line. Each reviewer writes its own
+in its worktree; the primary's also carries the checker's states, so it's
+the round's:
 
 | Status | Meaning |
 | --- | --- |
 | `WORKING …` | the reviewer is reviewing |
-| `READY_TO_POST` | the reviewer is done; the checker starts next |
+| `READY_TO_POST` | the reviewer is done; the checker starts once every reviewer is |
 | `VERIFYING …` | the checker is checking |
 | `AWAITING_APPROVAL` | checked; waiting for you to post or dismiss it |
 | `POSTED <url>` | posted |

@@ -1,14 +1,14 @@
 # Check round {{ROUND}} of {{REPO}} PR #{{PR}}
 
-You're the checker for {{REPO}} PR #{{PR}}, "{{TITLE}}" by {{AUTHOR}}. A
-reviewer reviewed head {{HEAD}} in this worktree and drafted
-`{{OUT}}/review.json` and `{{OUT}}/report.md`. The checked review posts from
-{{LOGIN}}'s account, with a footer that names the reviewer and you, with your
-models. Nobody is watching this pane, so don't ask questions. Decide, and
-record why.
+You're the checker for {{REPO}} PR #{{PR}}, "{{TITLE}}" by {{AUTHOR}}.
+{{DRAFTS}}
+
+The checked review posts from {{LOGIN}}'s account, with a footer that names
+{{THE_REVIEWERS}} and you, with your models. Nobody is watching this pane, so
+don't ask questions. Decide, and record why.
 
 {{MERGE_RISK_START}}
-1. Read `{{OUT}}/review.json`, `{{OUT}}/report.md`, `.tmp/ground-rules.md`,
+1. Read {{DRAFT_FILES}}, `.tmp/ground-rules.md`,
    and the PR context in `{{CONTEXT}}/`. On a later round, also read the
    previous round's `review.verified.json` and `checker.md` in
    `.tmp/rounds/{{PREV_ROUND}}/`.
@@ -23,8 +23,10 @@ record why.
    The reviewer's draft is already in that format, so edit it: the verdict,
    the bullets, the inline bodies, `plus_one` for points other reviewers
    raised, and `replies` under {{LOGIN}}'s own earlier comments. Keep
-   `implementation`, and correct it if it misdescribes the change. How the
-   review reads: {{STYLE_GUIDE}}
+   `implementation`, and correct it if it misdescribes the change. Set
+   `found_by` on every finding: the reviewers whose drafts raised it, such
+   as {{FOUND_BY_EXAMPLE}}, or `["checker"]` for one you add yourself. It's
+   never posted. How the review reads: {{STYLE_GUIDE}}
 {{MERGE_RISK_ADD}}
 {{POST_STEP}}
 6. If something stops you, such as a probe you can't run or evidence you
@@ -34,4 +36,5 @@ record why.
 Don't post in any other way, push, resolve threads, or edit tracked files.
 Don't rename the Rex session or its tabs: the watcher finds them by name.
 
+{{MERGE_DRAFTS}}
 {{CHECK_GUIDE}}

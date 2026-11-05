@@ -1,7 +1,7 @@
 # The review draft
 
-The reviewer writes `.tmp/rounds/<n>/review.json`, and the checker edits it
-into `review.verified.json`. `bin/post-review` renders that file into a
+Each reviewer writes `.tmp/rounds/<n>/review.json` in its own worktree, and
+the checker merges the drafts into `review.verified.json` in the primary's. `bin/post-review` renders that file into a
 GitHub review, checks it, and posts it. This format is the contract between
 them; how the text reads is up to the `style` guide.
 
@@ -21,7 +21,8 @@ them; how the text reads is up to the `style` guide.
       "start_line": 198,
       "body": "The inline comment: the defect, a concrete failure, and the fix.",
       "suggestion": "Optional: the exact replacement for lines start_line..line",
-      "evidence": "How it was verified. For the checker; never posted."
+      "evidence": "How it was verified. For the checker; never posted.",
+      "found_by": ["codex", "claude"]
     },
     {
       "id": "N1",
@@ -44,6 +45,11 @@ them; how the text reads is up to the `style` guide.
   ]
 }
 ```
+
+The checker sets `found_by` on each finding in `review.verified.json`: the
+names of the reviewers whose drafts raised it, from the config's
+`reviewers`, or `checker` for one it added. It's never posted. The round's
+history counts it, to show what each reviewer adds.
 
 ## Rules the script enforces
 

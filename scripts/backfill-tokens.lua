@@ -24,7 +24,7 @@ local rounds = require("rex_reviewer.rounds")
 local save = rex.args.save == true or rex.args.save == "true"
 local also = rex.args.also and util.expand(rex.args.also)
 
--- The worktrees the PR's agents may have run in.
+-- The worktrees the PR's agents may have run in: every reviewer's.
 local function worktrees(e)
   local out, seen = {}, {}
   local function add(path)
@@ -33,8 +33,10 @@ local function worktrees(e)
       out[#out + 1] = path
     end
   end
-  add(e.worktree)
   add(rounds.worktree_path(e))
+  for _, path in ipairs(rounds.worktrees(e)) do
+    add(path)
+  end
   if also then
     local owner, name = util.split_slug(e.repo)
     add((also:gsub("{owner}", owner):gsub("{name}", name):gsub("{pr}", tostring(e.pr))))
@@ -57,16 +59,7 @@ local function usage(e, cutoff)
     if not t then
       error(string.format("%s: token-usage failed on %s: %s", ledger.label(e), path, util.trim(res.stderr)), 0)
     end
-    for agent, counts in pairs(t) do
-      if type(counts) == "table" then
-        local into = sum[agent] or {}
-        for _, k in ipairs(rules.TOKEN_FIELDS) do
-          into[k] = (into[k] or 0) + (counts[k] or 0)
-        end
-        sum[agent] = into
-      end
-    end
-    sum.total = sum.total + (t.total or 0)
+    rules.add_tokens(sum, t)
   end
   return sum
 end

@@ -112,9 +112,14 @@ local repos = {}
 for _, r in ipairs(c.repo_list) do
   repos[#repos + 1] = r.slug
 end
+local reviewers = {}
+for _, r in ipairs(c.reviewer_list) do
+  reviewers[#reviewers + 1] = r.name == r.agent and r.name or (r.name .. " (" .. r.agent .. ")")
+end
 log(string.format(
-  "rex-reviewer watcher: %s; %s reviews, %s checks, post=%s; every %ds, up to %d rounds%s",
-  table.concat(repos, ", "), c.reviewer, c.checker, c.post, c.poll_seconds, c.max_rounds,
+  "rex-reviewer watcher: %s; %s %s, %s checks, post=%s; every %ds, up to %d rounds%s",
+  table.concat(repos, ", "), table.concat(reviewers, " and "), #reviewers > 1 and "review" or "reviews",
+  c.checker, c.post, c.poll_seconds, c.max_rounds,
   ledger.paused() and " (paused)" or ""
 ))
 step(true)

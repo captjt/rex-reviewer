@@ -17,6 +17,9 @@ struct Entry: Decodable, Identifiable, Equatable, Sendable {
     var url: String?
     var state: String?
     var phase: String?
+    /// While reviewing: how many of the round's reviewers are done, of how many.
+    var reviewersDone: Int?
+    var reviewersTotal: Int?
     var round: Int?
     var trigger: String?
     var verdict: String?
@@ -52,6 +55,8 @@ struct Entry: Decodable, Identifiable, Equatable, Sendable {
         case startError = "start_error"
         case endedAt = "ended_at"
         case requestedAt = "requested_at"
+        case reviewersDone = "reviewers_done"
+        case reviewersTotal = "reviewers_total"
     }
 
     /// Merged or closed, and cleaned up.

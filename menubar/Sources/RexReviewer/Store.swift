@@ -214,8 +214,14 @@ final class Store {
         let s = roundStatus[e.id] ?? ""
         if s.hasPrefix("BLOCKED") { return "Blocked" }
         if s.hasPrefix("POSTED") || s == "DISMISSED" { return "Done, closing its tab" }
-        if s.hasPrefix("HEAD_MOVED") { return "New commits, the reviewer is catching up" }
+        if s.hasPrefix("HEAD_MOVED") { return "New commits, the reviewers are catching up" }
         if e.phase == "checking" || s.hasPrefix("VERIFYING") { return "The checker is checking" }
+        // With several reviewers, the primary's status is only its own.
+        if let total = e.reviewersTotal, total > 1 {
+            let done = e.reviewersDone ?? 0
+            if done >= total { return "Reviewed, the checker is next" }
+            return done == 0 ? "The \(total) reviewers are reviewing" : "\(done) of \(total) reviewers done"
+        }
         if s == "READY_TO_POST" { return "Reviewed, the checker is next" }
         return "The reviewer is reviewing"
     }

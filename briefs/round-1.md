@@ -1,4 +1,4 @@
-# Round 1 of {{REPO}} PR #{{PR}}: {{TITLE}}
+# Round {{ROUND}} of {{REPO}} PR #{{PR}}: {{TITLE}}
 
 - Author: {{AUTHOR}}
 - Head: {{HEAD}} (this worktree), against `{{BASE}}`
