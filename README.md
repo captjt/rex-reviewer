@@ -161,6 +161,25 @@ add an adapter to [`lua/rex_reviewer/agents.lua`](lua/rex_reviewer/agents.lua).
 
 The menu bar app has two tabs.
 
+<table>
+  <tr>
+    <td valign="top">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/images/now-dark.png">
+        <img src="docs/images/now-light.png" width="400" alt="The Now tab: a checked review ready to post, two rounds in progress, one queued, and the last week's reviews with their verdicts and merge risk">
+      </picture>
+    </td>
+    <td valign="top">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/images/recap-dark.png">
+        <img src="docs/images/recap-light.png" width="400" alt="The Recap tab for the last 30 days: reviews, approvals, changes requested, and merges, then the PRs that merged, each with its verdicts and what it changes">
+      </picture>
+    </td>
+  </tr>
+</table>
+
+<sub>The PRs are made up. <code>menubar/screenshots.sh</code> renders these again from a sample ledger.</sub>
+
 - **Now** shows what needs you, reviews ready to post, rounds in progress,
   the queue, and the last week of reviews. You can pause, check GitHub now,
   and stop or start the watcher from it. Clicking a round shows its tab in

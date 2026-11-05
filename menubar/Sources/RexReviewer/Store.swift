@@ -116,6 +116,7 @@ final class Store {
 
     /// The watcher runs as `rex do <watch_script>`.
     func checkWatcherProcess() async {
+        if Snapshot.isActive { return }
         guard let script = state.watchScript else {
             if watcherRunning { watcherRunning = false }
             return
