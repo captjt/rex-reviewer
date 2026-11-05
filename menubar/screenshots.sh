@@ -125,3 +125,12 @@ for look in light dark; do
 	REX_REVIEWER_STATE_DIR="$demo" "$bin" --snapshot "$images/recap-$look.png" --tab Recap --range "30 days" --appearance "$look"
 done
 echo "wrote $(cd "$images" && pwd)/{now,recap}-{light,dark}.png"
+
+# The social preview card shows now-dark.png, so render it again too. It
+# needs Chrome; upload the result in the repo's Settings, under Social preview.
+chrome="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+if [ -x "$chrome" ]; then
+	"$chrome" --headless=new --disable-gpu --hide-scrollbars --window-size=1280,640 \
+		--screenshot="$images/social-preview.png" "file://$(cd "$images" && pwd)/social-preview.html" >/dev/null 2>&1
+	echo "wrote $(cd "$images" && pwd)/social-preview.png"
+fi

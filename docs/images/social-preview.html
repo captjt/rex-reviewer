@@ -1,0 +1,102 @@
+<!doctype html>
+<!-- The GitHub social preview card. menubar/screenshots.sh renders it to
+     social-preview.png (1280x640) with headless Chrome, after now-dark.png. -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --bg: #0a0c10;
+    --text: #f0f3f6;
+    --muted: #9198a1;
+    --line: rgba(255, 255, 255, 0.09);
+    --green: #3fb950;
+    --blue: #4493f8;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1280px; height: 640px; overflow: hidden; }
+  body {
+    background:
+      radial-gradient(620px 520px at 960px 360px, rgba(63, 185, 80, 0.16), transparent 70%),
+      radial-gradient(560px 420px at 120px 40px, rgba(68, 147, 248, 0.12), transparent 70%),
+      var(--bg);
+    color: var(--text);
+    font-family: -apple-system, system-ui, "Helvetica Neue", sans-serif;
+    position: relative;
+  }
+  /* A faint dot grid, fading out toward the panel. */
+  body::before {
+    content: "";
+    position: absolute; inset: 0;
+    background-image: radial-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1px);
+    background-size: 24px 24px;
+    mask-image: linear-gradient(90deg, #000 0%, rgba(0, 0, 0, 0.5) 50%, transparent 75%);
+  }
+  .copy {
+    position: absolute; left: 76px; top: 0; bottom: 0; width: 680px;
+    display: flex; flex-direction: column; justify-content: center; gap: 26px;
+  }
+  .eyebrow {
+    align-self: flex-start;
+    font: 600 15px/1 ui-monospace, "SF Mono", Menlo, monospace;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--green);
+    padding: 8px 12px; border-radius: 999px;
+    border: 1px solid rgba(63, 185, 80, 0.35);
+    background: rgba(63, 185, 80, 0.08);
+  }
+  h1 {
+    font-size: 84px; line-height: 0.95; font-weight: 750; letter-spacing: -0.035em;
+  }
+  .tagline {
+    font-size: 28px; line-height: 1.32; color: #c5ccd4; letter-spacing: -0.01em;
+    max-width: 610px;
+  }
+  .flow { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+  .step {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 16px; font-weight: 550; color: var(--text);
+    padding: 9px 12px 9px 10px; border-radius: 10px;
+    border: 1px solid var(--line); background: rgba(255, 255, 255, 0.04);
+    white-space: nowrap;
+  }
+  .step b {
+    display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%;
+    font: 700 12px/1 ui-monospace, "SF Mono", Menlo, monospace;
+    background: rgba(255, 255, 255, 0.1); color: var(--muted);
+  }
+  .step.you b { background: var(--green); color: #04150a; }
+  .arrow { color: #4d545c; font-size: 16px; }
+  .url {
+    position: absolute; left: 76px; bottom: 44px;
+    font: 500 17px/1 ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted);
+  }
+  .panel {
+    position: absolute; right: 56px; top: 36px;
+    width: 400px; height: auto;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow:
+      0 0 0 1px rgba(0, 0, 0, 0.6),
+      0 30px 80px rgba(0, 0, 0, 0.65),
+      0 8px 24px rgba(0, 0, 0, 0.4);
+  }
+</style>
+</head>
+<body>
+  <div class="copy">
+    <span class="eyebrow">Agent code review in Rex</span>
+    <h1>Rex Reviewer</h1>
+    <p class="tagline">When a PR requests you, one agent reviews it, a second checks every finding, and you post it.</p>
+    <div class="flow">
+      <span class="step"><b>1</b>Codex or Claude Code reviews</span>
+      <span class="arrow">→</span>
+      <span class="step"><b>2</b>Claude Code checks</span>
+      <span class="arrow">→</span>
+      <span class="step you"><b>✓</b>You post</span>
+    </div>
+  </div>
+  <div class="url">github.com/captjt/rex-reviewer</div>
+  <img class="panel" src="now-dark.png" alt="">
+</body>
+</html>
