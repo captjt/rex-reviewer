@@ -160,6 +160,7 @@ function M.mark_posted(e, fields, now)
     merge_risk = fields.merge_risk,
     tokens = round_tokens,
     reviewers = fields.reviewers,
+    checker_effort = fields.checker_effort,
   }
   return e
 end

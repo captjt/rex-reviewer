@@ -31,6 +31,51 @@ local function args_for(name, defaults)
   return out
 end
 
+-- Each agent's flag for an effort level, and how many args of the user's
+-- an arg starts that set effort too (0 when it doesn't), so the round's
+-- level wins over one in args or extra_args.
+local EFFORT = {
+  claude = {
+    flag = function(level)
+      return { "--effort", level }
+    end,
+    sets = function(a)
+      return a == "--effort" and 2 or (a:match("^%-%-effort=") and 1 or 0)
+    end,
+  },
+  codex = {
+    flag = function(level)
+      return { "-c", 'model_reasoning_effort="' .. level .. '"' }
+    end,
+    sets = function(a, b)
+      if (a == "-c" or a == "--config") and b and b:match("^model_reasoning_effort=") then
+        return 2
+      end
+      return a:match("^%-%-config=model_reasoning_effort=") and 1 or 0
+    end,
+  },
+}
+
+-- args with the agent's effort flag for level in place of any it had. With
+-- no level, args as they are, so the agent's own setting holds.
+local function with_effort(agent, args, level)
+  local e = EFFORT[agent]
+  if not level or not e then
+    return args
+  end
+  local out, i = {}, 1
+  while i <= #args do
+    local n = e.sets(args[i], args[i + 1])
+    if n > 0 then
+      i = i + n
+    else
+      out[#out + 1] = args[i]
+      i = i + 1
+    end
+  end
+  return util.append(out, e.flag(level))
+end
+
 ---------------------------------------------------------------------------
 -- Claude Code
 
@@ -67,6 +112,15 @@ function M.claude_name(cwd, session)
     "sh", claude_transcript(cwd, session or "none") }, { check = false })
   local model = M.claude_model_name(util.trim(res.stdout))
   return model and "Claude Code (" .. model .. ")" or "Claude Code"
+end
+
+-- The effort the session last ran at: Claude Code writes it on each reply.
+function M.claude_effort(cwd, session)
+  local res = util.run({ "/bin/sh", "-c",
+    [[jq -r 'select(.type == "assistant") | .effort // empty' "$1" 2>/dev/null | tail -1]],
+    "sh", claude_transcript(cwd, session or "none") }, { check = false })
+  local level = util.trim(res.stdout)
+  return level ~= "" and level or nil
 end
 
 ---------------------------------------------------------------------------
@@ -126,10 +180,32 @@ function M.codex_name(thread)
   return "Codex (" .. model .. ")"
 end
 
+-- The effort the thread last ran at: its rollout records each turn's, and
+-- the thread's row the latest when the rollout can't be read.
+function M.codex_effort(thread)
+  local db = codex_db()
+  if not db or not thread then
+    return nil
+  end
+  local rollout = codex_query(db, "select rollout_path from threads where id = " .. sql_quote(thread))
+  local level = ""
+  if rollout ~= "" then
+    local res = util.run({ "/bin/sh", "-c",
+      [[grep -F '"type":"turn_context"' "$1" 2>/dev/null | tail -1 | jq -r '.payload.effort // empty' 2>/dev/null]],
+      "sh", rollout }, { check = false })
+    level = util.trim(res.stdout)
+  end
+  if level == "" then
+    level = codex_query(db, "select reasoning_effort from threads where id = " .. sql_quote(thread))
+  end
+  return level ~= "" and level or nil
+end
+
 ---------------------------------------------------------------------------
 -- Reviewers: one agent per reviewer in the config, resumed every round. An
 -- adapter works on the reviewer's record r in the ledger entry's reviewers:
--- its worktree, pane, and session. extra is the reviewer's own extra_args.
+-- its worktree, pane, session, and the round's effort level (r.effort, nil
+-- for the agent's own). extra is the reviewer's own extra_args.
 
 M.reviewers = {}
 
@@ -149,8 +225,8 @@ M.reviewers.codex = {
     if r.session then
       util.append(argv, { "resume", r.session })
     end
-    util.append(argv, args_for("codex", self.defaults))
-    util.append(argv, extra)
+    local args = util.append(args_for("codex", self.defaults), extra)
+    util.append(argv, with_effort("codex", args, r.effort))
     add_dirs(argv, dirs)
     return util.append(argv, { "-C", r.worktree })
   end,
@@ -167,6 +243,9 @@ M.reviewers.codex = {
   end,
   name = function(_, r)
     return M.codex_name(r.session)
+  end,
+  effort = function(_, r)
+    return M.codex_effort(r.session)
   end,
   archive = function(_, r)
     if r.session then
@@ -186,8 +265,8 @@ M.reviewers.claude = {
       r.session = uuid()
       util.append(argv, { "--session-id", r.session })
     end
-    util.append(argv, args_for("claude", self.defaults))
-    util.append(argv, extra)
+    local args = util.append(args_for("claude", self.defaults), extra)
+    util.append(argv, with_effort("claude", args, r.effort))
     add_dirs(argv, dirs)
     local label = string.format("rex-reviewer %s#%d", e.repo, e.pr)
     if not r.primary then
@@ -200,6 +279,9 @@ M.reviewers.claude = {
   end,
   name = function(_, r)
     return M.claude_name(r.worktree, r.session)
+  end,
+  effort = function(_, r)
+    return M.claude_effort(r.worktree, r.session)
   end,
 }
 
@@ -222,16 +304,17 @@ function M.byline(rs)
 end
 
 ---------------------------------------------------------------------------
--- The checker: a fresh Claude Code each round. It may run the preview
--- action, and the post action only when post = "auto". Deny rules hold in
--- every permission mode. dirs are the other reviewers' worktrees, where
--- their probes and builds are.
+-- The checker: a fresh Claude Code each round, at the round's check effort
+-- (e.checker_effort) when there is one. It may run the preview action, and
+-- the post action only when post = "auto". Deny rules hold in every
+-- permission mode. dirs are the other reviewers' worktrees, where their
+-- probes and builds are.
 
 function M.checker_command(e, dirs)
   local c = config.load()
   e.checker_session = uuid()
   local argv = { "claude", "--session-id", e.checker_session }
-  util.append(argv, args_for("claude", { "--permission-mode", "auto" }))
+  util.append(argv, with_effort("claude", args_for("claude", { "--permission-mode", "auto" }), e.checker_effort))
   add_dirs(argv, dirs)
   local allowed = { "Bash(rex do reviewer_preview:*)" }
   local denied = { "Bash(rex do reviewer_dismiss:*)" }
@@ -249,6 +332,10 @@ end
 
 function M.checker_name(e)
   return M.claude_name(e.worktree, e.checker_session)
+end
+
+function M.checker_effort(e)
+  return e.checker_session and M.claude_effort(e.worktree, e.checker_session) or nil
 end
 
 return M

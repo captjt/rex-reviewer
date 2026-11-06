@@ -57,6 +57,26 @@ return {
     check = false,
   },
 
+  -- How hard the agents think, round by round: review for the reviewers,
+  -- check for the checker. A level (low, medium, high, xhigh, max), a
+  -- function(pr) that returns one, or false for the agent's own setting.
+  -- It replaces any effort in agents.<agent>.extra_args; a nil return
+  -- leaves those. A repo or a reviewer can set its own. The README lists
+  -- what pr holds.
+  -- effort = {
+  --   review = function(pr)
+  --     if pr.round > 1 then
+  --       if pr.last_merge_risk == "high" then return "xhigh" end
+  --       if pr.delta_lines and pr.delta_lines < 100 then return "medium" end
+  --     end
+  --     if pr.touches({ "migrations/", "auth/", ".github/workflows/" }) then return "xhigh" end
+  --     if pr.lines < 150 then return "medium" end
+  --     if pr.lines > 1500 then return "xhigh" end
+  --     return "high"
+  --   end,
+  --   check = "high",
+  -- },
+
   -- Extra folders for PATH, such as where codex or claude live.
   path = {},
 

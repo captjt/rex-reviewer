@@ -126,7 +126,8 @@ reviewers = {
 - Every reviewer must finish before the checker starts. One that's blocked,
   or whose pane closes, holds the round and asks for you.
 - Each round's history records, for each reviewer, the findings it drafted,
-  how many the checker kept, how many only it found, and its tokens.
+  how many the checker kept, how many only it found, its tokens, and its
+  effort.
 
 ### Guides: bring your own skills
 
@@ -160,6 +161,61 @@ repos = {
 
 Only the draft format is fixed, because the posting script reads it:
 [`docs/review-draft.md`](docs/review-draft.md).
+
+### Effort: deeper on the PRs that need it
+
+`effort` sets how hard the agents think, round by round: `review` for the
+reviewers and `check` for the checker. Each takes a level (`low`, `medium`,
+`high`, `xhigh`, or `max`), a `function(pr)` that returns one, or `false`
+for the agent's own setting. Claude Code gets `--effort <level>`, and Codex
+gets `-c model_reasoning_effort=<level>`, in place of any effort in `args` or
+`extra_args`. A function that returns `nil` leaves those as they are.
+
+```lua
+effort = {
+  review = function(pr)
+    if pr.round > 1 then
+      if pr.last_merge_risk == "high" then return "xhigh" end
+      if pr.delta_lines and pr.delta_lines < 100 then return "medium" end
+    end
+    if pr.touches({ "migrations/", "auth/", ".github/workflows/" }) then return "xhigh" end
+    if pr.lines < 150 then return "medium" end
+    if pr.lines > 1500 then return "xhigh" end
+    return "high"
+  end,
+  check = "high",
+},
+```
+
+A function sees the PR as the round starts:
+
+| Field | What it is |
+| --- | --- |
+| `repo`, `pr`, `title`, `author`, `round` | the PR, and the round about to start |
+| `additions`, `deletions`, `lines`, `changed_files` | its size; `lines` is the first two summed |
+| `files`, `labels` | its file paths and label names |
+| `touches(...)` | true when a path contains any string given, as a list or as arguments |
+| `delta_lines` | from round 2: the lines changed since the last round, or `nil` |
+| `last_verdict`, `last_blocking`, `last_merge_risk` | how the agents' last posted round ended, or `nil` in round 1 |
+| `drafted`, `drafted_blocking` | the checker's only: the findings the reviewers drafted, and how many are blocking |
+
+Merge risk is the checker's assessment, so it can't set round 1's effort.
+Paths and size can, and the last round's risk can set the rounds after it.
+
+A repo's `effort` overrides these slot by slot, and a reviewer's own `effort`
+overrides `review` for it:
+
+```lua
+reviewers = {
+  { name = "codex", agent = "codex", effort = "medium" },
+  { name = "claude", agent = "claude" },  -- effort.review
+},
+```
+
+Each round's history records the level each reviewer and the checker ran at,
+read from its session, so you can compare what each level costs and finds.
+`rex-reviewer doctor` runs each function on an empty PR and shows the effort
+in use.
 
 ### Briefs
 

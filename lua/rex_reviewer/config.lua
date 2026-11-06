@@ -51,6 +51,21 @@ local BUNDLED = {
   merge_risk = "guides/merge-risk.md",
 }
 
+-- Effort: how hard the agents think, set for each round. Claude Code gets
+-- --effort <level> and Codex -c model_reasoning_effort=<level>. A value is a
+-- level, a function(pr) that returns one, or false (or a nil return) for
+-- the agent's own setting. A repo's effort overrides these slot by slot, and
+-- a reviewer's own effort overrides review.
+--   review  the reviewers
+--   check   the checker
+M.EFFORT_LEVELS = { "low", "medium", "high", "xhigh", "max" }
+local EFFORT_RANK = {}
+for i, level in ipairs(M.EFFORT_LEVELS) do
+  EFFORT_RANK[level] = i
+end
+local EFFORT_SLOTS = { review = true, check = true }
+local EFFORT_HINT = "low, medium, high, xhigh, or max"
+
 local DEFAULTS = {
   reviewer = "codex",
   checker = "claude",
@@ -86,6 +101,29 @@ local function fail(msg)
   error("rex-reviewer config (" .. M.path() .. "): " .. msg, 0)
 end
 
+local function check_effort(where, v)
+  if v == nil or v == false or type(v) == "function" or EFFORT_RANK[v] then
+    return v
+  end
+  fail(string.format("%s must be %s, a function(pr) that returns one, or false, not %s", where, EFFORT_HINT, tostring(v)))
+end
+
+local function check_effort_slots(where, t)
+  if t == nil then
+    return {}
+  end
+  if type(t) ~= "table" then
+    fail(where .. " must be a table, such as { review = \"high\", check = \"high\" }")
+  end
+  for slot, v in pairs(t) do
+    if not EFFORT_SLOTS[slot] then
+      fail(where .. "." .. tostring(slot) .. " isn't an effort slot; the slots are review and check")
+    end
+    check_effort(where .. "." .. slot, v)
+  end
+  return t
+end
+
 local function normalize_repos(repos)
   if type(repos) ~= "table" then
     fail("repos must be a table, such as { [\"owner/name\"] = { checkout = \"~/src/name\" } }")
@@ -109,6 +147,7 @@ local function normalize_repos(repos)
       checkout = util.expand(r.checkout),
       notes = r.notes or "",
       guides = r.guides or {},
+      effort = check_effort_slots(slug .. ".effort", r.effort),
     }
     out[#out + 1] = repo
     by_slug[slug] = repo
@@ -179,6 +218,7 @@ local function normalize_reviewers(user)
       primary = i == 1,
       extra_args = r.extra_args or {},
       guides = r.guides or {},
+      effort = check_effort("reviewers." .. name .. ".effort", r.effort),
     }
     out[i] = rec
     by_name[name] = rec
@@ -244,6 +284,7 @@ function M.load()
     guides[slot] = v
   end
   c.guides = guides
+  c.effort = check_effort_slots("effort", user.effort)
 
   local caches = {}
   for _, d in ipairs(c.caches or {}) do
@@ -295,6 +336,32 @@ function M.guide(repo, slot, pr, reviewer)
       error(string.format("guides.%s for %s: %s doesn't exist", slot, repo.slug, path), 0)
     end
     return "Read `" .. path .. "` and follow it."
+  end
+  return v
+end
+
+-- The effort for a slot (review or check) on a PR, as rounds.effort_view
+-- shows it: a level, or nil for the agent's own setting. A reviewer's own
+-- effort comes first, then the repo's, then the global one.
+function M.effort(repo, slot, pr, reviewer)
+  local c = M.load()
+  local v, where
+  if slot == "review" and reviewer and reviewer.effort ~= nil then
+    v, where = reviewer.effort, "reviewers." .. reviewer.name .. ".effort"
+  elseif repo.effort and repo.effort[slot] ~= nil then
+    v, where = repo.effort[slot], repo.slug .. ".effort." .. slot
+  else
+    v, where = c.effort[slot], "effort." .. slot
+  end
+  if type(v) == "function" then
+    v = v(pr)
+  end
+  if v == nil or v == false then
+    return nil
+  end
+  if not EFFORT_RANK[v] then
+    error(string.format("%s returned %s for %s#%s; return %s, or nil for the agent's own setting",
+      where, tostring(v), repo.slug, tostring(pr and pr.pr), EFFORT_HINT), 0)
   end
   return v
 end

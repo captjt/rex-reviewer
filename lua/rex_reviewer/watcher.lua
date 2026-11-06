@@ -427,12 +427,43 @@ function M.doctor()
         end
       end
     end
+    -- Effort functions, on an empty round-1 PR: one that errors or returns
+    -- something other than a level shows up here, not as a round that
+    -- won't start.
+    local sample = { review = rounds.effort_view({ repo = r.slug, pr = 0 }, 1), check = rounds.effort_view({ repo = r.slug, pr = 0 }, 1, {}) }
+    for _, slot in ipairs({ "review", "check" }) do
+      local eok, err = pcall(config.effort, r, slot, sample[slot])
+      if not eok then
+        check(r.slug .. " effort." .. slot, false, tostring(err))
+      end
+    end
+    for _, rv in ipairs(c.reviewer_list) do
+      if rv.effort ~= nil then
+        local eok, err = pcall(config.effort, r, "review", sample.review, rv)
+        if not eok then
+          check(r.slug .. " reviewers." .. rv.name .. ".effort", false, tostring(err))
+        end
+      end
+    end
   end
   local names = {}
   for _, rv in ipairs(c.reviewer_list) do
     names[#names + 1] = rv.name .. " (" .. rv.agent .. ")"
   end
   check("reviewers", true, table.concat(names, ", ") .. "; the first is the primary")
+  local function effort_of(v)
+    if type(v) == "function" then
+      return "by PR"
+    end
+    return v or "the agent's own"
+  end
+  local effort = { "review " .. effort_of(c.effort.review), "check " .. effort_of(c.effort.check) }
+  for _, rv in ipairs(c.reviewer_list) do
+    if rv.effort ~= nil then
+      effort[#effort + 1] = rv.name .. " " .. effort_of(rv.effort)
+    end
+  end
+  check("effort", true, table.concat(effort, "; "))
   local all = true
   for _, ch in ipairs(checks) do
     all = all and ch.ok

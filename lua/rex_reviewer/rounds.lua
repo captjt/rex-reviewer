@@ -252,6 +252,108 @@ function M.merge_risk_enabled(e)
 end
 
 ---------------------------------------------------------------------------
+-- Effort
+
+-- The lines a diff adds or removes, counting only inside its hunks, so a
+-- removed line that starts with -- isn't taken for a file header. Nil when
+-- there's no diff.
+local function diff_lines(path)
+  local d = util.read_file(path)
+  if not d then
+    return nil
+  end
+  local n, in_hunk = 0, false
+  for line in (d .. "\n"):gmatch("(.-)\n") do
+    if line:sub(1, 2) == "@@" then
+      in_hunk = true
+    elseif line:sub(1, 5) == "diff " then
+      in_hunk = false
+    elseif in_hunk then
+      local c = line:sub(1, 1)
+      if c == "+" or c == "-" then
+        n = n + 1
+      end
+    end
+  end
+  return n
+end
+
+-- What an effort function sees of the PR when a round starts: its size,
+-- files, and labels, how much changed since the last round, and how the
+-- last round the agents posted ended (not one you dismissed or reviewed). The checker's adds the findings the
+-- reviewers drafted. Works on an entry with no worktree yet, as doctor's.
+function M.effort_view(e, round, rs)
+  local ctx = e.worktree and string.format("%s/.tmp/context/round-%d", e.worktree, round)
+  local p = ctx and util.decode(util.read_file(ctx .. "/pr.json") or "") or {}
+  local files, labels = {}, {}
+  for _, f in ipairs(type(p.files) == "table" and p.files or {}) do
+    files[#files + 1] = f.path
+  end
+  for _, l in ipairs(type(p.labels) == "table" and p.labels or {}) do
+    labels[#labels + 1] = l.name
+  end
+  local last
+  local history = type(e.history) == "table" and e.history or {}
+  for i = #history, 1, -1 do
+    if history[i].by ~= "you" then
+      last = history[i]
+      break
+    end
+  end
+  local additions, deletions = e.additions or 0, e.deletions or 0
+  local view = {
+    repo = e.repo,
+    pr = e.pr,
+    title = e.title,
+    author = e.author,
+    round = round,
+    additions = additions,
+    deletions = deletions,
+    lines = additions + deletions,
+    changed_files = e.changed_files or #files,
+    files = files,
+    labels = labels,
+    delta_lines = ctx and round > 1 and diff_lines(ctx .. "/delta.diff") or nil,
+    last_verdict = last and last.verdict,
+    last_blocking = last and last.blocking,
+    last_merge_risk = last and last.merge_risk,
+  }
+  -- True when a file's path contains any of the strings given, as a list
+  -- or as arguments: pr.touches({ "migrations/", "auth/" }).
+  view.touches = function(...)
+    local subs = {}
+    for _, a in ipairs({ ... }) do
+      if type(a) == "table" then
+        util.append(subs, a)
+      elseif type(a) == "string" then
+        subs[#subs + 1] = a
+      end
+    end
+    for _, f in ipairs(files) do
+      for _, s in ipairs(subs) do
+        if f:find(s, 1, true) then
+          return true
+        end
+      end
+    end
+    return false
+  end
+  if rs then
+    view.drafted, view.drafted_blocking = 0, 0
+    for _, r in ipairs(rs) do
+      local d = util.decode(util.read_file(string.format("%s/.tmp/rounds/%d/review.json", r.worktree, round)) or "") or {}
+      for _, f in ipairs(type(d.findings) == "table" and d.findings or {}) do
+        view.drafted = view.drafted + 1
+        if f.severity == "blocking" then
+          view.drafted_blocking = view.drafted_blocking + 1
+        end
+      end
+    end
+  end
+  return view
+end
+
+---------------------------------------------------------------------------
 -- Prep: every reviewer's worktree at the head, and the context the agents
 -- read.
 
@@ -462,6 +564,17 @@ function M.start(repo, pr, session)
     end
   end
 
+  -- Each reviewer's effort for the round, chosen before any pane opens, so
+  -- an effort function that fails leaves nothing to close.
+  local c = config.load()
+  local view = M.effort_view(e, round)
+  local efforts = {}
+  for _, r in ipairs(rs) do
+    r.effort = config.effort(c.repos[e.repo], "review", view, c.reviewers_by_name[r.name])
+    efforts[r.name] = r.effort
+  end
+  e.checker_effort = nil
+
   -- Each reviewer gets its task in its own worktree. One that's new to the
   -- PR reviews it whole; the others pick up from their last round. If any
   -- fails to start, every pane this attempt opened closes, and nothing is
@@ -516,6 +629,7 @@ function M.start(repo, pr, session)
   ledger.append_event({
     kind = "started", repo = repo, pr = pr, round = round, head = e.round_head,
     note = #rs > 1 and (#rs .. " reviewers: " .. table.concat(names, ", ")) or nil,
+    effort = next(efforts) and efforts or nil,
   })
   return { repo = repo, pr = pr, round = round, pane = e.pane, panes = panes, session = rs[1].session, worktree = e.worktree }
 end
@@ -578,6 +692,8 @@ function M.start_checker(e, session)
       dirs[#dirs + 1] = r.worktree
     end
   end
+  local c = config.load()
+  e.checker_effort = config.effort(c.repos[e.repo], "check", M.effort_view(e, e.round, rs))
   vars.DRAFTS, vars.DRAFT_FILES = drafts_intro(rs, vars)
   vars.MERGE_DRAFTS = #rs > 1 and util.render(brief("parts/merge-drafts.md"), vars) or ""
   util.write_file(e.worktree .. "/" .. vars.OUT .. "/check.md", util.render(brief("check.md"), vars))
@@ -607,7 +723,7 @@ function M.start_checker(e, session)
   e.checker_pane = name
   e.reviewers_done = #rs
   ledger.save(e)
-  ledger.append_event({ kind = "checking", repo = e.repo, pr = e.pr, round = e.round, head = e.round_head })
+  ledger.append_event({ kind = "checking", repo = e.repo, pr = e.pr, round = e.round, head = e.round_head, effort = e.checker_effort })
 end
 
 ---------------------------------------------------------------------------
@@ -722,12 +838,18 @@ end
 -- drafted and, from found_by in the checked review when there is one, how
 -- many the checker kept and how many only it found. tokens is what its
 -- agent logged in its worktree this round; the primary's includes the
--- checker's when both are Claude Code. Updates each record's tokens_seen.
+-- checker's when both are Claude Code. effort is the level its agent ran
+-- at, as its session recorded it, or the round's when it can't be read.
+-- Updates each record's tokens_seen.
 local function scoreboard(e, rs, checked, by_wt)
   local board = {}
   for _, r in ipairs(rs) do
     local d = util.decode(util.read_file(string.format("%s/.tmp/rounds/%d/review.json", r.worktree, e.round)) or "") or {}
-    local s = { drafted = type(d.findings) == "table" and #d.findings or 0 }
+    local adapter = agents.reviewers[r.agent]
+    local s = {
+      drafted = type(d.findings) == "table" and #d.findings or 0,
+      effort = (adapter and adapter.effort and adapter:effort(r)) or r.effort,
+    }
     if checked then
       s.kept, s.only = 0, 0
     end
@@ -808,7 +930,7 @@ function M.post(repo, pr, opts)
     head = e.round_head, verdict = posted.state, review_id = posted.review_id, url = posted.url,
     blocking = blocking, non_blocking = non_blocking, merge_risk = posted.merge_risk,
     implementation = implementation(checked), tokens = tokens_spent(by_wt),
-    reviewers = scoreboard(e, rs, checked, by_wt),
+    reviewers = scoreboard(e, rs, checked, by_wt), checker_effort = agents.checker_effort(e) or e.checker_effort,
   }, util.now())
   e.merge_risk = posted.merge_risk
   ledger.save(e)
@@ -836,9 +958,12 @@ function M.dismiss(repo, pr)
   local verified = util.decode(util.read_file(out .. "/review.verified.json") or "")
   local d = verified or util.decode(util.read_file(out .. "/review.json") or "") or {}
   local by_wt = usage_by_worktree(e)
+  -- The checker's effort only when this round's checker ran.
+  local checked = e.phase == "checking" or e.phase == "awaiting"
   rules.mark_posted(e, {
     head = e.round_head, verdict = "DISMISSED", by = "you", implementation = implementation(d),
     tokens = tokens_spent(by_wt), reviewers = scoreboard(e, M.round_reviewers(e), verified, by_wt),
+    checker_effort = checked and (agents.checker_effort(e) or e.checker_effort) or nil,
   }, util.now())
   ledger.save(e)
   M.set_status(e, "DISMISSED")

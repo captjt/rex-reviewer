@@ -57,7 +57,9 @@ One JSON object a line, appended: `{seq, at, kind, repo?, pr?, round?, head?, no
 Kinds include `requested`, `re-requested`, `unrequested`, `new-head`,
 `head-moved`, `pickup`, `started`, `checking`, `delta`, `repointed`,
 `awaiting`, `posted`, `dismissed`, `merged`, `closed`, `cleaned`, `paused`,
-`resumed`, `started`, and `stopped`.
+`resumed`, `started`, and `stopped`. With `effort` set, `started` carries
+`effort`, each reviewer's level by name, and `checking` carries the
+checker's.
 
 ## repos/&lt;owner&gt;/&lt;name&gt;/pr-&lt;n&gt;.json
 
@@ -87,9 +89,10 @@ One entry per PR the tool has seen.
 | `worktree` | the PR's worktree, the primary reviewer's; `.tmp/status.txt` in it is the round's status |
 | `session_id`, `pane`, `checker_pane` | the Rex session, the primary reviewer's pane, and the checker's |
 | `reviewer`, `reviewer_session`, `checker_session` | the primary reviewer's agent and session, and the checker's session |
-| `reviewers` | each reviewer's record, by name: `agent`, `session`, `worktree`, `pane`, `index` and `primary` (its place in the config), `first_round`, and `tokens_seen` (its agent's count in its worktree at the last round's end) |
+| `reviewers` | each reviewer's record, by name: `agent`, `session`, `worktree`, `pane`, `index` and `primary` (its place in the config), `first_round`, `tokens_seen` (its agent's count in its worktree at the last round's end), and `effort` (the level `effort` chose for its last round, absent for the agent's own) |
 | `round_reviewers` | the names of the reviewers in the round in progress, primary first |
 | `reviewers_done`, `reviewers_total` | while `reviewing`: how many of the round's reviewers are done |
+| `checker_effort` | the level `effort` chose for the round's checker, absent for its own |
 | `extra_worktrees` | the other reviewers' worktrees, kept for cleanup and token counts |
 | `start_error` | why the last start failed |
 | `history` | one record per finished round, below |
@@ -104,7 +107,10 @@ name: `drafted` (findings in its draft), `kept` and `only` (findings in the
 checked review whose `found_by` names it, and names only it; absent when
 nothing was checked), and `tokens` (what its agent logged in its worktree
 in the round; the primary's includes the checker's when both are Claude
-Code). Records written before 0.2 have only the first six and `at`. The menu bar app's recap
+Code). From 0.5, each reviewer's part also has `effort`, and the record has
+`checker_effort`: the level each agent ran at, as its session recorded it
+(Claude Code's transcript, Codex's rollout), or the level `effort` chose
+when the session can't be read. Records written before 0.2 have only the first six and `at`. The menu bar app's recap
 reads these records, with the `merged` and `closed` events in `events.jsonl`
 for entries that predate `outcome`.
 
