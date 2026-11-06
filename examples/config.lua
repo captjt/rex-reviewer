@@ -1,8 +1,8 @@
 -- ~/.config/rex-reviewer/config.lua
 --
--- rex-reviewer reviews the PRs that request you by name in these repos. The
--- reviewer drafts each review, the checker verifies it, and with post = "ask"
--- nothing posts until you approve it.
+-- rex-reviewer reviews the PRs that request you by name in these repos. Each
+-- reviewer drafts a review, the checker merges and verifies them, and with
+-- post = "ask" nothing posts until you approve it.
 
 return {
   repos = {

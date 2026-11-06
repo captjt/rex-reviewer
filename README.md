@@ -1,6 +1,6 @@
 # rex-reviewer
 
-<img src="docs/images/social-preview.png" alt="Rex Reviewer: when a PR requests you, one agent reviews it, a second checks every finding, and you post it. Beside it, the menu bar app's Now tab.">
+<img src="docs/images/social-preview.png" alt="Rex Reviewer: when a PR requests you, several agents review it side by side, a checker confirms every finding, and you post it. Codex and Claude Code review, Claude Code checks, you post. Beside it, the menu bar app's Now tab.">
 
 Agent code review for the GitHub PRs that request you, run in
 [Rex](https://www.superlogical.com/rex). When someone asks you to review a

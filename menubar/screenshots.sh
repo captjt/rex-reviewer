@@ -54,12 +54,14 @@ def reviewing($round; $phase; $started):
   {state: "reviewing", phase: $phase, round: $round, requested_at: ago($started + 3),
    started_at: ago($started), worktree: "\($demo)/worktrees/pr-\(.pr)"};
 
-# Now: one queued, two in progress, one waiting for you.
+# Now: one queued, two in progress (one with two reviewers), one waiting for you.
 (pr(148; "feat(cart): keep the carts of signed-out shoppers"; "mira"; 212; 18)
   + {state: "queued", round: 0, requested_at: ago(3)}),
 
+# Two reviewers side by side, Codex and Claude Code, and one is done.
 (pr(147; "feat(checkout): add a dark theme to the checkout pages"; "theo"; 486; 97)
-  | . + reviewing(1; "reviewer"; 12)),
+  | . + reviewing(1; "reviewer"; 12)
+  + {round_reviewers: ["codex", "claude"], reviewers_done: 1, reviewers_total: 2}),
 
 (pr(145; "perf(search): cache product search results per locale"; "kai"; 158; 41)
   + posted([round(1; "CHANGES_REQUESTED"; 1440; 1; 2; "medium")];

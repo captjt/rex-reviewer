@@ -50,7 +50,7 @@
   }
   .tagline {
     font-size: 28px; line-height: 1.32; color: #c5ccd4; letter-spacing: -0.01em;
-    max-width: 610px;
+    max-width: 610px; text-wrap: balance;
   }
   .flow { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
   .step {
@@ -67,6 +67,12 @@
   }
   .step.you b { background: var(--green); color: #04150a; }
   .arrow { color: #4d545c; font-size: 16px; }
+  /* The reviewers, stacked, and a bracket joining them into the checker. */
+  .reviewers { display: flex; flex-direction: column; gap: 8px; }
+  .join {
+    align-self: stretch; width: 12px; margin: 20px -2px 20px -4px;
+    border: 1.5px solid #4d545c; border-left: 0; border-radius: 0 8px 8px 0;
+  }
   .url {
     position: absolute; left: 76px; bottom: 44px;
     font: 500 17px/1 ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted);
@@ -87,9 +93,13 @@
   <div class="copy">
     <span class="eyebrow">Agent code review in Rex</span>
     <h1>Rex Reviewer</h1>
-    <p class="tagline">When a PR requests you, one agent reviews it, a second checks every finding, and you post it.</p>
+    <p class="tagline">When a PR requests you, several agents review it side by side, a checker confirms every finding, and you post it.</p>
     <div class="flow">
-      <span class="step"><b>1</b>Codex or Claude Code reviews</span>
+      <div class="reviewers">
+        <span class="step"><b>1</b>Codex reviews</span>
+        <span class="step"><b>1</b>Claude Code reviews</span>
+      </div>
+      <span class="join"></span>
       <span class="arrow">→</span>
       <span class="step"><b>2</b>Claude Code checks</span>
       <span class="arrow">→</span>
