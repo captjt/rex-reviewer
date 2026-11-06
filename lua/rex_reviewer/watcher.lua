@@ -15,6 +15,30 @@ local function rex_cli(args)
   return util.run(util.append({ "rex" }, args))
 end
 
+-- The IDs of the Rex sessions that exist now, or nil when Rex can't say.
+function M.live_sessions()
+  local ok, res = pcall(rex.call, "session.list", {})
+  if not ok or type(res) ~= "table" then
+    return nil
+  end
+  local live = {}
+  for _, s in ipairs(res.sessions or {}) do
+    live[s.session_id] = true
+  end
+  return live
+end
+
+-- The session a PR's panes are in: the one its last round opened them in,
+-- while that session exists, otherwise fallback (the watcher's). A saved ID
+-- can outlive its session: when Rex restarts, reviewer_up makes a new
+-- rex-reviewer session, and the old one's panes are gone with it.
+function M.pr_session(e, fallback, live)
+  if e.session_id and (live == nil or live[e.session_id]) then
+    return e.session_id
+  end
+  return fallback
+end
+
 ---------------------------------------------------------------------------
 -- Checking GitHub
 
@@ -76,10 +100,11 @@ function M.advance(session, log)
     end
   end
   local attention = {}
+  local live = M.live_sessions()
   for _, e in ipairs(entries) do
     local label = ledger.label(e)
     local ok, err = pcall(function()
-      local session = e.session_id or session
+      local session = M.pr_session(e, session, live)
       if e.state == "merged" or e.state == "closed" then
         rounds.cleanup(e.repo, e.pr, session)
         log(string.format("%s %s: cleaned up", label, e.state))
@@ -289,7 +314,7 @@ function M.focus(repo, pr)
     if not e or e.state ~= "reviewing" then
       error(string.format("%s#%d has no round in progress", repo, pr), 0)
     end
-    sid = e.session_id or st.session_id
+    sid = M.pr_session(e, st.session_id, M.live_sessions())
     local names = {}
     for _, r in ipairs(rounds.round_reviewers(e)) do
       names[#names + 1] = r.pane
