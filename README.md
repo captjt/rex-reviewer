@@ -303,18 +303,35 @@ rex-reviewer pause | resume | check | up | down
 Each is a Rex action too, such as `rex do reviewer_post pr=123`, so you can
 bind them to keys.
 
+### With rex-inbox
+
+The watcher reports each PR that needs you as its own program status record
+on its pane, so Rex shows them on the watcher's tab. If you also run
+[rex-inbox](https://github.com/captjt/rex-inbox), it picks them up. A review
+ready to post comes with **Post**, **Dismiss**, and **Preview** in its Mac
+app, its notifications, and on your phone. The reviewer and checker panes
+stop adding Finished items, and their permission prompts are labeled by PR,
+like `api#12 · codex reviewer`.
+
+While the rex-inbox hub runs, it does the alerting, and this menu bar icon
+turns orange only when the watcher is down. To have it badge as well, turn off
+**Let Rex Inbox Alert Me** in its ⋯ menu. Without rex-inbox, nothing changes.
+
 ## Build on it
 
 Everything the tool knows is in plain files under
 `~/.local/state/rex-reviewer/`: an entry per PR, the watcher's last step, and
 an event log. [`docs/ledger.md`](docs/ledger.md) is the contract, so you can
 build your own view (a SwiftBar plugin, a TUI, a web page) without touching
-the core.
+the core. The watcher's status records carry what needs you, and the actions
+take a record's id (`item=`), so a tool that follows program status can act
+on them too.
 
 ```
 init.lua                 the Rex actions
 scripts/                 the watcher, starting a round, replaying a PR
-lua/rex_reviewer/        config, ledger, rules, GitHub, agents, rounds, watcher
+lua/rex_reviewer/        config, ledger, rules, GitHub, agents, rounds, watcher, status records
+tests/                   checks that run in plain Lua: luajit tests/status.lua
 briefs/                  the prompts, with their optional parts
 guides/                  the default style guide and merge-risk rubric
 bin/                     rex-reviewer, post-review, rex-agent, token-usage

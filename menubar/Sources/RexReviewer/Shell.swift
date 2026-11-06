@@ -59,4 +59,25 @@ enum Shell {
     static func rex(_ arguments: [String]) -> Result {
         run("/usr/bin/env", ["rex"] + arguments)
     }
+
+    /// Whether something accepts connections on the unix socket at path.
+    /// Call it off the main actor.
+    static func socketAnswers(_ path: String) -> Bool {
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let bytes = Array(path.utf8)
+        let capacity = MemoryLayout.size(ofValue: addr.sun_path)
+        guard bytes.count < capacity else { return false }
+        withUnsafeMutableBytes(of: &addr.sun_path) { raw in
+            raw.copyBytes(from: bytes)
+            raw[bytes.count] = 0
+        }
+        let size = socklen_t(MemoryLayout<sockaddr_un>.size)
+        return withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, size) == 0 }
+        }
+    }
 }

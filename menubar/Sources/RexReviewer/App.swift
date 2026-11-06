@@ -34,6 +34,9 @@ struct MenuBarLabel: View {
     }
 
     /// Orange when something needs you; otherwise the system's own color.
+    /// While rex-inbox alerts you to what needs you (Store.badgesNeeds), only
+    /// a watcher that's down turns it orange: with no watcher, there are no
+    /// status records for rex-inbox to see.
     private var badge: (NSImage, Int?) {
         let active = store.inProgress.count
         let activeCount = active > 0 ? active : nil
@@ -46,7 +49,7 @@ struct MenuBarLabel: View {
             break
         }
         let needs = store.needsYou.count + store.readyToPost.count
-        if needs > 0 {
+        if needs > 0 && store.badgesNeeds {
             return (.symbol("exclamationmark.circle.fill", color: .systemOrange), needs)
         }
         switch store.watcherStatus {

@@ -528,6 +528,11 @@ struct FooterView: View {
                     get: { store.openAtLogin },
                     set: { store.setOpenAtLogin($0) }
                 ))
+                // While rex-inbox runs, it alerts you to the same items.
+                Toggle(store.inboxRunning ? "Let Rex Inbox Alert Me (Running)" : "Let Rex Inbox Alert Me", isOn: Binding(
+                    get: { store.badgeMode == .automatic },
+                    set: { store.badgeMode = $0 ? .automatic : .always }
+                ))
                 Button("Open State Folder") {
                     NSWorkspace.shared.open(URL(fileURLWithPath: Paths.stateDir))
                 }

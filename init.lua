@@ -17,11 +17,39 @@ local util = require("rex_reviewer.util")
 local ledger = require("rex_reviewer.ledger")
 local rounds = require("rex_reviewer.rounds")
 local watcher = require("rex_reviewer.watcher")
+local status = require("rex_reviewer.status")
 
 -- The repo an action acts on: repo= when given, else the only one that fits.
 local function repo_of(a)
   return config.repo(a.repo, a.pr, ledger).slug
 end
+
+-- The PR an action acts on, as repo and number. item= is the id of a status
+-- record the watcher reports (see lua/rex_reviewer/status.lua), so a client
+-- such as rex-inbox can act on the item it showed. It must still name the
+-- round in progress, and, when phase is given, a round in that phase.
+-- Otherwise pr= and repo= name the PR.
+local function target(a, phase)
+  if a.item and a.item ~= "" then
+    local repo, pr, round = status.resolve(a.item, config.load().repo_list)
+    local e = ledger.load(repo, pr)
+    local label = ledger.label({ repo = repo, pr = pr })
+    if not e or e.state ~= "reviewing" or e.round ~= round then
+      error(string.format("%s round %d is over; nothing was done", label, round), 0)
+    end
+    local now = e.phase or "reviewer"
+    if phase and now ~= phase then
+      error(string.format("%s round %d isn't waiting for you (its phase is %s); nothing was done", label, round, now), 0)
+    end
+    return repo, pr
+  end
+  if not a.pr then
+    error("pass pr= (and repo= when more than one repo is configured), or item=", 0)
+  end
+  return repo_of(a), a.pr
+end
+
+local PR = { pr = "integer?", repo = "string?", item = "string?" }
 
 local function action(name, title, args, run)
   rex.action({ name = name, title = "Rex Reviewer: " .. title, args = args, run = run })
@@ -77,16 +105,21 @@ end)
 -- Starting a round takes longer than Rex allows an action (30 s), so it's a
 -- script: rex do <rex-reviewer>/scripts/start.lua pr=<n>
 
-action("reviewer_preview", "render the checked review without posting", { pr = "integer", repo = "string?" }, function(_, a)
-  return rounds.post(repo_of(a), a.pr, { dry = true })
+action("reviewer_preview", "render the checked review without posting", PR, function(_, a)
+  local repo, pr = target(a)
+  return rounds.post(repo, pr, { dry = true })
 end)
 
-action("reviewer_post", "post the checked review", { pr = "integer", repo = "string?" }, function(_, a)
-  return rounds.post(repo_of(a), a.pr)
+-- With item=, only a review that waits for you: with post = "auto", the
+-- checker posts by pr=.
+action("reviewer_post", "post the checked review", PR, function(_, a)
+  local repo, pr = target(a, "awaiting")
+  return rounds.post(repo, pr)
 end)
 
-action("reviewer_dismiss", "end a round without posting", { pr = "integer", repo = "string?" }, function(_, a)
-  return rounds.dismiss(repo_of(a), a.pr)
+action("reviewer_dismiss", "end a round without posting", PR, function(_, a)
+  local repo, pr = target(a)
+  return rounds.dismiss(repo, pr)
 end)
 
 action("reviewer_cleanup", "clean up a merged or closed PR", { pr = "integer", repo = "string?" }, function(_, a)
@@ -95,9 +128,9 @@ action("reviewer_cleanup", "clean up a merged or closed PR", { pr = "integer", r
   return rounds.cleanup(slug, a.pr, e and e.session_id or ledger.load_state().session_id)
 end)
 
-action("reviewer_focus", "show a round's tab, or the watcher's", { pr = "integer?", repo = "string?" }, function(_, a)
-  if a.pr then
-    return watcher.focus(repo_of(a), a.pr)
+action("reviewer_focus", "show a round's tab, or the watcher's", PR, function(_, a)
+  if a.pr or (a.item and a.item ~= "") then
+    return watcher.focus(target(a))
   end
   return watcher.focus(nil, nil)
 end)

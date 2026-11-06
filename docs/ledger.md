@@ -39,12 +39,37 @@ in its session changes status.
 | Field | Meaning |
 | --- | --- |
 | `at` | when the step ran |
-| `attention` | what needs you: a list of `{repo, pr, kind, text}` |
+| `attention` | what needs you: a list of `{repo, pr, kind, text, round, title, draft?}` |
 | `check_failed` | the error, when the GitHub check failed |
 | `error` | the error, when the step itself failed |
 
 `kind` is one of `ready` (a checked review waits for you to post or dismiss
 it), `blocked` (an agent stopped), `start-failed`, `pane-closed`, or `error`.
+`round` and `title` are the PR's. A `ready` item's `draft` sums up the
+checked review: `event` (`APPROVE`, `REQUEST_CHANGES`, or `COMMENT`),
+`verdict`, and the `blocking` and `non_blocking` finding counts.
+
+## The watcher's status records
+
+The watcher reports the same items as program status (OSC 7501) on its own
+pane, so Rex shows them, and so can any tool that follows program status,
+such as [rex-inbox](https://github.com/captjt/rex-inbox).
+`lua/rex_reviewer/status.lua` builds them.
+
+| Record | Holds |
+| --- | --- |
+| the root record | `app=rex-reviewer`; `idle` (with `msg` "Paused" while paused), or `error` when a GitHub check or a step failed |
+| `pr/<owner>/<name>/<pr>/<round>` | one per `attention` item: `app=rex-reviewer`, `title` "name#pr" and the PR's title, and `msg` |
+
+| `attention` kind | Record state |
+| --- | --- |
+| `ready` | `blocked`, `kind=permission`; `msg` says the event, the finding counts, and the verdict |
+| `blocked`, `pane-closed` | `blocked`, no `kind` |
+| `start-failed`, `error` | `error` |
+
+An id segment holds up to 32 characters, so a longer owner or repo name is
+cut to 32. Records clear when their item does, and a watcher that starts
+clears any its last run left.
 
 ## check-now
 
@@ -142,3 +167,15 @@ rex do reviewer_preview pr=12 repo=owner/name   # render it; writes .tmp/rounds/
 rex do reviewer_focus pr=12 repo=owner/name     # show its tab in the Rex app
 rex do reviewer_pause | reviewer_resume | reviewer_up | reviewer_down | reviewer_check
 ```
+
+A client that shows the status records can pass a record's id as `item=`
+in place of `pr=` and `repo=`:
+
+```sh
+rex do reviewer_post item=pr/owner/name/12/2
+```
+
+The action then acts only if that round is still in progress, and
+`reviewer_post` only if the round waits for you (phase `awaiting`).
+Otherwise it does nothing and says why, so a client never acts on a round
+that moved on after it showed it.

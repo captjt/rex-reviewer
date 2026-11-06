@@ -6,6 +6,21 @@ enum Paths {
         ?? NSHomeDirectory() + "/.local/state/rex-reviewer"
     static let reposDir = stateDir + "/repos"
     static let checkNow = stateDir + "/check-now"
+
+    /// rex-inbox's hub, when it runs: the same paths rex-inbox uses.
+    static let inboxSocket: String = {
+        let env = ProcessInfo.processInfo.environment
+        if let s = env["REX_INBOX_SOCKET"] { return s }
+        return (env["REX_INBOX_STATE"] ?? NSHomeDirectory() + "/.local/state/rex-inbox") + "/hub.sock"
+    }()
+}
+
+/// Whether the menu bar icon turns orange for what needs you.
+enum BadgeMode: String, Sendable {
+    /// Unless rex-inbox's hub is running: it alerts you to the same items,
+    /// from the watcher's status records, and lets you act on them.
+    case automatic
+    case always
 }
 
 /// One PR, repos/<owner>/<name>/pr-<n>.json.

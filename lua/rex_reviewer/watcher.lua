@@ -82,10 +82,40 @@ function M.scan(opts)
 end
 
 ---------------------------------------------------------------------------
--- One step for every PR. Returns what needs you: { repo, pr, kind, text }.
+-- One step for every PR. Returns what needs you: { repo, pr, kind, text },
+-- plus the PR's round and title, and for a review ready to post, a summary
+-- of the checked draft.
+
+-- The checked draft's outcome: its event, its verdict, and how many
+-- findings block. Nil when there's no checked draft.
+local function draft_summary(e)
+  if not e.worktree then
+    return nil
+  end
+  local path = string.format("%s/.tmp/rounds/%d/review.verified.json", e.worktree, e.round or 0)
+  local d = util.decode(util.read_file(path) or "")
+  if type(d) ~= "table" then
+    return nil
+  end
+  local blocking, non_blocking = 0, 0
+  for _, f in ipairs(type(d.findings) == "table" and d.findings or {}) do
+    if f.severity == "blocking" then
+      blocking = blocking + 1
+    else
+      non_blocking = non_blocking + 1
+    end
+  end
+  return {
+    event = d.event, blocking = blocking, non_blocking = non_blocking,
+    verdict = type(d.verdict) == "string" and d.verdict or nil,
+  }
+end
 
 local function needs(list, e, kind, text)
-  list[#list + 1] = { repo = e.repo, pr = e.pr, kind = kind, text = text }
+  list[#list + 1] = {
+    repo = e.repo, pr = e.pr, kind = kind, text = text, round = e.round, title = e.title,
+    draft = kind == "ready" and draft_summary(e) or nil,
+  }
 end
 
 function M.advance(session, log)

@@ -20,6 +20,11 @@ final class Store {
     private(set) var checkRequestedAt: Date?
     private(set) var openAtLogin = SMAppService.mainApp.status == .enabled
     private(set) var remoteControlOff = false
+    /// rex-inbox's hub answers on its socket.
+    private(set) var inboxRunning = false
+    var badgeMode = BadgeMode(rawValue: UserDefaults.standard.string(forKey: "badgeMode") ?? "") ?? .automatic {
+        didSet { UserDefaults.standard.set(badgeMode.rawValue, forKey: "badgeMode") }
+    }
     var message: String?
 
     @ObservationIgnored private var streams: [FSEventStreamRef] = []
@@ -48,6 +53,7 @@ final class Store {
         ticker = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.checkWatcherProcess()
+                await self?.checkInbox()
                 try? await Task.sleep(for: .seconds(15))
                 self?.reload()
             }
@@ -128,6 +134,19 @@ final class Store {
         }.value
         if running != watcherRunning { watcherRunning = running }
     }
+
+    /// Whether rex-inbox's hub is running, from its socket.
+    func checkInbox() async {
+        if Snapshot.isActive { return }
+        let path = Paths.inboxSocket
+        let running = await Task.detached { Shell.socketAnswers(path) }.value
+        if running != inboxRunning { inboxRunning = running }
+    }
+
+    /// Whether the icon turns orange for what needs you. rex-inbox shows the
+    /// same items, from the watcher's status records, and can act on them,
+    /// so by default it does the alerting while its hub runs.
+    var badgesNeeds: Bool { badgeMode == .always || !inboxRunning }
 
     private func watch(_ path: String) {
         try? FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)

@@ -7,9 +7,11 @@
 -- pane in the session changes status, and after every check, it moves each
 -- PR one step. It spends no tokens.
 --
--- It sets its own pane's status, so the Rex app notifies you: blocked when a
--- round needs you, error when a check fails, idle otherwise. It also writes
--- watcher.json, which the menu bar app reads.
+-- It reports its pane's status (OSC 7501), so Rex shows what needs you: one
+-- record for each PR that does (a review ready to post, a stopped agent, a
+-- failed start), and the watcher's own record, idle, or error when a check
+-- fails. lua/rex_reviewer/status.lua says what the records hold. It also
+-- writes watcher.json, which the menu bar app reads.
 
 local ROOT = debug.getinfo(1, "S").source:gsub("^@", ""):match("^(.*)/scripts/[^/]+$")
 package.path = ROOT .. "/lua/?.lua;" .. package.path
@@ -17,59 +19,32 @@ local config = require("rex_reviewer.config")
 config.set_root(ROOT)
 local ledger = require("rex_reviewer.ledger")
 local watcher = require("rex_reviewer.watcher")
+local status = require("rex_reviewer.status")
 
 local c = config.load()
 local session = rex.session_id
-local last_status
+-- What the closures share lives in tables: after pcall catches an error,
+-- Rex's Lua can detach a closure's view of a reassigned outer local.
+local run = { busy = false }
+local shown = {}
 
 local function log(line)
   rex.log(os.date("!%H:%M:%SZ") .. "  " .. line)
 end
 
-local B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-local function b64(s)
-  local out = {}
-  for i = 1, #s, 3 do
-    local a, b, cc = s:byte(i, i + 2)
-    local n = a * 65536 + (b or 0) * 256 + (cc or 0)
-    out[#out + 1] = B64:sub(math.floor(n / 262144) % 64 + 1, math.floor(n / 262144) % 64 + 1)
-      .. B64:sub(math.floor(n / 4096) % 64 + 1, math.floor(n / 4096) % 64 + 1)
-      .. (b and B64:sub(math.floor(n / 64) % 64 + 1, math.floor(n / 64) % 64 + 1) or "=")
-      .. (cc and B64:sub(n % 64 + 1, n % 64 + 1) or "=")
+local function report(root, items)
+  local out = status.sync(shown, root, items)
+  if #out > 0 then
+    io.write(table.concat(out))
+    io.flush()
   end
-  return table.concat(out)
 end
 
--- Set this pane's status (OSC 7501), so the Rex app's own notifications
--- cover the watcher.
-local function set_status(state, msg)
-  local key = state .. "|" .. (msg or "")
-  if key == last_status then
-    return
-  end
-  local fields = "state=" .. state
-  if msg and msg ~= "" then
-    fields = fields .. ":msg=" .. b64(msg)
-  end
-  io.write("\27]7501;" .. fields .. "\27\\")
-  io.flush()
-  last_status = key
-end
-
-local function summary(attention)
-  local bits = {}
-  for _, a in ipairs(attention) do
-    bits[#bits + 1] = string.format("%s#%d: %s", a.repo:match("/(.+)$") or a.repo, a.pr, a.text)
-  end
-  return table.concat(bits, "; ")
-end
-
-local busy = false
 local function step(check_github)
-  if busy then
+  if run.busy then
     return
   end
-  busy = true
+  run.busy = true
   local ok, err = pcall(function()
     local check_failed
     if check_github then
@@ -85,26 +60,29 @@ local function step(check_github)
     end
     local attention = watcher.advance(session, log)
     ledger.save_watcher({ attention = attention, check_failed = check_failed })
-    if #attention > 0 then
-      for _, a in ipairs(attention) do
-        log(string.format("needs you: %s#%d: %s", a.repo, a.pr, a.text))
-      end
-      set_status("blocked", "rex-reviewer: " .. summary(attention))
-    elseif check_failed then
-      set_status("error", "rex-reviewer: GitHub check failed")
-    else
-      set_status("idle")
+    for _, a in ipairs(attention) do
+      log(string.format("needs you: %s#%d: %s", a.repo, a.pr, a.text))
     end
+    report(status.root({
+      error = check_failed and ("GitHub check failed: " .. check_failed) or nil,
+      paused = ledger.paused(),
+    }), attention)
   end)
-  busy = false
+  run.busy = false
   if not ok then
     log("step failed: " .. tostring(err))
-    set_status("error", "rex-reviewer: " .. tostring(err):sub(1, 120))
+    -- Keep the items already shown; only the watcher's own record changes.
+    pcall(report, status.root({ error = "step failed: " .. tostring(err) }), nil)
     pcall(ledger.save_watcher, { attention = {}, error = tostring(err):sub(1, 200) })
   end
 end
 
-rex.on("com.superlogical.terminal.program_status_changed", function()
+-- A pane's status changing can move a round on. The watcher's own records
+-- changing can't, so its own pane is left out.
+rex.on("com.superlogical.terminal.program_status_changed", function(ctx)
+  if ctx and rex.block_id and ctx.block_id == rex.block_id then
+    return
+  end
   step(false)
 end)
 
@@ -122,6 +100,10 @@ log(string.format(
   c.checker, c.post, c.poll_seconds, c.max_rounds,
   ledger.paused() and " (paused)" or ""
 ))
+-- A watcher before this one may have left records behind (an error outlives
+-- its process), so start from none.
+io.write(status.CLEAR_ALL)
+io.flush()
 step(true)
 rex.every(c.poll_seconds, function()
   step(true)
@@ -129,7 +111,7 @@ end)
 
 -- A client's "check now" leaves this file; it's picked up within 5 seconds.
 rex.every(5, function()
-  if not busy and os.remove(ledger.check_now_path()) then
+  if not run.busy and os.remove(ledger.check_now_path()) then
     step(true)
   end
 end)
