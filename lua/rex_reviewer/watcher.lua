@@ -183,6 +183,10 @@ function M.advance(session, log)
             if head == e.round_head then
               rounds.start_checker(e, session)
               log(string.format("%s round %d: reviewed; the checker is checking", label, e.round))
+              if p.stale then
+                log(string.format("%s round %d: counted %s as done: READY_TO_POST for %d+ min while the pane still says working (a background process?)",
+                  label, e.round, table.concat(p.stale, ", "), math.floor(rounds.STALE_WORKING_SECONDS / 60)))
+              end
             else
               log(string.format("%s round %d: head moved to %s; %s", label, e.round, util.short(head), rounds.follow_head(e, session, head)))
             end
@@ -421,10 +425,14 @@ function M.doctor()
   if not ok then
     return { ok = false, checks = checks }
   end
-  local programs = { "rex", "gh", "git", "jq", "perl", "uuidgen", "claude" }
+  local programs = { "rex", "gh", "git", "jq", "perl", "uuidgen" }
+  local agents_used = { c.checker }
   for _, r in ipairs(c.reviewer_list) do
-    programs[#programs + 1] = r.agent
-    if r.agent == "codex" then
+    agents_used[#agents_used + 1] = r.agent
+  end
+  for _, agent in ipairs(agents_used) do
+    programs[#programs + 1] = agent
+    if agent == "codex" then
       programs[#programs + 1] = "sqlite3"
     end
   end

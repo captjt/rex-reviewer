@@ -54,8 +54,8 @@ local BUNDLED = {
 -- Effort: how hard the agents think, set for each round. Claude Code gets
 -- --effort <level> and Codex -c model_reasoning_effort=<level>. A value is a
 -- level, a function(pr) that returns one, or false (or a nil return) for
--- the agent's own setting. A repo's effort overrides these slot by slot, and
--- a reviewer's own effort overrides review.
+-- the agent's own setting. A repo's effort overrides these slot by slot, a
+-- reviewer's own effort overrides review, and the checker's overrides check.
 --   review  the reviewers
 --   check   the checker
 M.EFFORT_LEVELS = { "low", "medium", "high", "xhigh", "max" }
@@ -226,6 +226,31 @@ local function normalize_reviewers(user)
   return out, by_name
 end
 
+-- The checker. `checker = "claude"` is the short form of
+-- `checker = { agent = "claude" }`; the table form can add extra_args (after
+-- agents.<agent>.extra_args) and effort (over effort.check), as a reviewer
+-- can. c.checker stays the agent's name.
+local function normalize_checker(ch)
+  if type(ch) == "string" then
+    ch = { agent = ch }
+  end
+  if type(ch) ~= "table" then
+    fail("checker must be \"claude\", \"codex\", or a table such as { agent = \"codex\" }")
+  end
+  if not AGENTS[ch.agent] then
+    fail("checker.agent must be \"claude\" or \"codex\", not " .. tostring(ch.agent))
+  end
+  if ch.extra_args ~= nil and type(ch.extra_args) ~= "table" then
+    fail("checker.extra_args must be a list")
+  end
+  for k in pairs(ch) do
+    if k ~= "agent" and k ~= "extra_args" and k ~= "effort" then
+      fail("checker." .. tostring(k) .. " isn't a checker setting; they are agent, extra_args, and effort")
+    end
+  end
+  return ch.agent, ch.extra_args or {}, check_effort("checker.effort", ch.effort)
+end
+
 -- Load and check the config once per Lua state.
 function M.load()
   if loaded then
@@ -255,9 +280,7 @@ function M.load()
   c.reviewer_list, c.reviewers_by_name = normalize_reviewers(user)
   -- The primary's agent, for code that names one reviewer.
   c.reviewer = c.reviewer_list[1].agent
-  if c.checker ~= "claude" then
-    fail("checker must be \"claude\"; it's the only checker so far")
-  end
+  c.checker, c.checker_extra_args, c.checker_effort = normalize_checker(c.checker)
   if not POST_MODES[c.post] then
     fail("post must be \"ask\" or \"auto\", not " .. tostring(c.post))
   end
@@ -348,6 +371,8 @@ function M.effort(repo, slot, pr, reviewer)
   local v, where
   if slot == "review" and reviewer and reviewer.effort ~= nil then
     v, where = reviewer.effort, "reviewers." .. reviewer.name .. ".effort"
+  elseif slot == "check" and c.checker_effort ~= nil then
+    v, where = c.checker_effort, "checker.effort"
   elseif repo.effort and repo.effort[slot] ~= nil then
     v, where = repo.effort[slot], repo.slug .. ".effort." .. slot
   else

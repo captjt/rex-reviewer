@@ -131,8 +131,8 @@ agents and worktrees. From 0.4, `reviewers` holds each reviewer's part, by
 name: `drafted` (findings in its draft), `kept` and `only` (findings in the
 checked review whose `found_by` names it, and names only it; absent when
 nothing was checked), and `tokens` (what its agent logged in its worktree
-in the round; the primary's includes the checker's when both are Claude
-Code). From 0.5, each reviewer's part also has `effort`, and the record has
+in the round; the primary's includes the checker's when both are the same
+agent). From 0.5, each reviewer's part also has `effort`, and the record has
 `checker_effort`: the level each agent ran at, as its session recorded it
 (Claude Code's transcript, Codex's rollout), or the level `effort` chose
 when the session can't be read. Records written before 0.2 have only the first six and `at`. The menu bar app's recap

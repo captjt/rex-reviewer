@@ -5,7 +5,7 @@
 Agent code review for the GitHub PRs that request you, run in
 [Rex](https://www.superlogical.com/rex). When someone asks you to review a
 PR, one or more reviewer agents (Codex, Claude Code, or both side by side)
-review it in its own Rex tab, and a checker (Claude Code) checks every
+review it in its own Rex tab, and a checker (Claude Code or Codex) checks every
 finding against the code. You then post the checked review, or let it post
 on its own. Every review says which agents wrote it, on your behalf:
 
@@ -33,7 +33,7 @@ tokens. A menu bar app shows what's happening.
    probes they need, and each draft a review. With more than one, each works
    in its own worktree and pane, blind to the others. Later rounds resume the
    same agent sessions, so each remembers its last round.
-4. **The checker**, a fresh Claude Code beside them, starts once every
+4. **The checker**, a fresh agent beside them, starts once every
    reviewer is done. It merges the drafts, verifies every finding, drops
    what it can't confirm, and assesses the merge risk.
 5. **The post.** With `post = "ask"` (the default), the checked review waits
@@ -51,7 +51,7 @@ tokens. A menu bar app shows what's happening.
   plus `git` and `jq`
 - A reviewer: [Codex](https://github.com/openai/codex) (which also needs
   `sqlite3`, part of macOS) or [Claude Code](https://claude.com/claude-code)
-- Claude Code for the checker
+- A checker: Claude Code or Codex
 - Swift 6 (Xcode or its command line tools), for the menu bar app
 
 ## Install
@@ -341,7 +341,9 @@ docs/                    the ledger and the review draft
 
 ## Limits
 
-- The checker is Claude Code only for now.
+- With `post = "ask"`, the post action refuses a review until its round waits
+  for you, whatever the checker's agent. Only a Claude Code checker is also
+  denied `reviewer_dismiss` outright; a Codex checker has only its brief.
 - Up to four reviewers a round, each with its own worktree and server port.
 - macOS only: the paths, the LaunchAgent, and the app assume it.
 - Only PRs that request you by name start a round; team requests don't.

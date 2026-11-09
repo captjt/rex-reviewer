@@ -19,9 +19,12 @@ return {
     },
   },
 
-  -- Who reviews: "codex" or "claude". The checker is Claude Code.
+  -- Who reviews and who checks: "codex" or "claude" for each, in any mix.
   reviewer = "codex",
   checker = "claude",
+  -- Or the checker's table form, with its own args (after
+  -- agents.<agent>.extra_args) and effort (over effort.check):
+  -- checker = { agent = "codex", extra_args = { "-c", 'model="gpt-6.1-sol"' }, effort = "high" },
 
   -- Or several reviewers side by side, each in its own worktree and pane,
   -- blind to the others; the checker merges their drafts. The first is the

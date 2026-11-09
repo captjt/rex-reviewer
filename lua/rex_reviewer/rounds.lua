@@ -57,7 +57,38 @@ function M.pane_state(session, name)
     return nil
   end
   local j = util.decode(res.stdout) or {}
-  return j.state, j.block_id
+  return j.state, j.block_id, j.updated_at
+end
+
+-- Epoch seconds from a Rex time, such as 2026-11-09T09:24:44.727-05:00.
+local function epoch_of(iso)
+  local d, t, z = (iso or ""):match("^(%d+%-%d+%-%d+)T(%d+:%d+:%d+)[%.%d]*(.*)$")
+  if not d then
+    return nil
+  end
+  z = (z == "" or z == "Z") and "+0000" or z:gsub(":", "")
+  local res = util.run({ "date", "-j", "-f", "%Y-%m-%dT%H:%M:%S%z", d .. "T" .. t .. z, "+%s" }, { check = false })
+  return tonumber(util.trim(res.stdout))
+end
+
+local function mtime(path)
+  local res = util.run({ "stat", "-f", "%m", path }, { check = false })
+  return tonumber(util.trim(res.stdout))
+end
+
+-- How long a reviewer's READY_TO_POST must stand while its pane still says
+-- working before it counts as done.
+M.STALE_WORKING_SECONDS = 300
+
+-- True when a reviewer wrote its status after its pane's working state
+-- began, and long enough ago: its turn is over, but something it left
+-- running in the background (a hung install, a server) keeps the agent
+-- reporting working. Codex does this with a background terminal open.
+function M.finished_while_working(wt, updated_at)
+  local wrote = mtime(wt .. "/.tmp/status.txt")
+  local since = epoch_of(updated_at)
+  return wrote ~= nil and since ~= nil and wrote > since
+    and os.time() - wrote >= M.STALE_WORKING_SECONDS
 end
 
 function M.close_pane(session, name)
@@ -574,6 +605,7 @@ function M.start(repo, pr, session)
     efforts[r.name] = r.effort
   end
   e.checker_effort = nil
+  e.checker_agent = nil
 
   -- Each reviewer gets its task in its own worktree. One that's new to the
   -- PR reviews it whole; the others pick up from their last round. If any
@@ -641,11 +673,15 @@ function M.progress(e, session)
   local p = { total = #rs, done = 0 }
   for _, r in ipairs(rs) do
     local st = M.status(e, r.worktree)
-    local pane = M.pane_state(session, r.pane)
+    local pane, _, updated_at = M.pane_state(session, r.pane)
     if st:match("^BLOCKED") then
       p.blocked = p.blocked or { name = r.name, why = (st:gsub("^BLOCKED:?%s*", "")) }
     elseif st == "READY_TO_POST" and pane ~= "working" then
       p.done = p.done + 1
+    elseif st == "READY_TO_POST" and M.finished_while_working(r.worktree, updated_at) then
+      p.done = p.done + 1
+      p.stale = p.stale or {}
+      p.stale[#p.stale + 1] = r.name
     elseif st:match("^WORKING") and not pane then
       p.closed = p.closed or r.name
     end
@@ -712,13 +748,19 @@ function M.start_checker(e, session)
   end
   argv[#argv + 1] = "--"
   util.append(argv, env_args(e.worktree))
+  local since = os.time()
   util.append(argv, agents.checker_command(e, dirs))
   local res = util.run(argv, { check = false })
   if not res.ok then
     M.close_pane(session, name)
-    error("Claude didn't start: " .. util.trim(res.stderr):sub(1, 300), 0)
+    error(string.format("the checker (%s) didn't start: %s", agents.checker_program(e), util.trim(res.stderr):sub(1, 300)), 0)
   end
   M.deliver(name, session, string.format("Read %s/check.md and do it.", vars.OUT))
+  e.checker_session = agents.checker_session_after_start(e, since)
+  if e.checker_agent == "codex" and e.checker_session then
+    e.checker_threads = type(e.checker_threads) == "table" and e.checker_threads or {}
+    table.insert(e.checker_threads, e.checker_session)
+  end
   e.phase = "checking"
   e.checker_pane = name
   e.reviewers_done = #rs
@@ -838,7 +880,7 @@ end
 -- drafted and, from found_by in the checked review when there is one, how
 -- many the checker kept and how many only it found. tokens is what its
 -- agent logged in its worktree this round; the primary's includes the
--- checker's when both are Claude Code. effort is the level its agent ran
+-- checker's when both are the same agent. effort is the level its agent ran
 -- at, as its session recorded it, or the round's when it can't be read.
 -- Updates each record's tokens_seen.
 local function scoreboard(e, rs, checked, by_wt)
@@ -886,6 +928,13 @@ function M.post(repo, pr, opts)
   local e = load(repo, pr)
   if e.state ~= "reviewing" then
     error(string.format("%s has no round in progress", ledger.label(e)), 0)
+  end
+  -- With post = "ask", only a review that waits for you posts: the watcher
+  -- moves a round to awaiting once its checker has finished. This holds for
+  -- every checker agent, where a deny rule holds only for Claude Code's.
+  if not opts.dry and config.load().post ~= "auto" and e.phase ~= "awaiting" then
+    error(string.format("%s round %d isn't waiting for you (post = \"ask\" and its phase is %s); nothing was posted",
+      ledger.label(e), e.round, e.phase or "reviewer"), 0)
   end
   local out = string.format("%s/.tmp/rounds/%d", e.worktree, e.round)
   local draft = out .. "/review.verified.json"
@@ -1040,6 +1089,7 @@ function M.cleanup(repo, pr, session)
       adapter:archive(r)
     end
   end
+  agents.archive_checkers(e)
   e.state = "cleaned"
   e.pane, e.checker_pane, e.phase = nil, nil, nil
   e.cleaned_at = util.now()

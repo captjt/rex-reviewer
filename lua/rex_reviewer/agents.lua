@@ -304,38 +304,130 @@ function M.byline(rs)
 end
 
 ---------------------------------------------------------------------------
--- The checker: a fresh Claude Code each round, at the round's check effort
--- (e.checker_effort) when there is one. It may run the preview action, and
--- the post action only when post = "auto". Deny rules hold in every
--- permission mode. dirs are the other reviewers' worktrees, where their
--- probes and builds are.
+-- The checker: a fresh agent each round (config.checker), at the round's
+-- check effort (e.checker_effort) when there is one. It may run the preview
+-- action, and the post action only when post = "auto". dirs are the other
+-- reviewers' worktrees, where their probes and builds are.
 
+local function checker_label(e)
+  return string.format("rex-reviewer %s#%d round %d check", e.repo, e.pr, e.round)
+end
+
+M.checkers = {}
+
+-- Claude Code: deny rules hold in every permission mode, so dismiss is
+-- always denied and post is denied unless post = "auto". rounds.post also
+-- refuses a post with post = "ask" until the round waits for you, whatever
+-- the checker's agent.
+M.checkers.claude = {
+  program = "claude",
+  command = function(_, e, dirs)
+    local c = config.load()
+    e.checker_session = uuid()
+    local argv = { "claude", "--session-id", e.checker_session }
+    local args = util.append(args_for("claude", { "--permission-mode", "auto" }), c.checker_extra_args)
+    util.append(argv, with_effort("claude", args, e.checker_effort))
+    add_dirs(argv, dirs)
+    local allowed = { "Bash(rex do reviewer_preview:*)" }
+    local denied = { "Bash(rex do reviewer_dismiss:*)" }
+    if c.post == "auto" then
+      allowed[#allowed + 1] = "Bash(rex do reviewer_post:*)"
+    else
+      denied[#denied + 1] = "Bash(rex do reviewer_post:*)"
+    end
+    argv[#argv + 1] = "--allowedTools"
+    util.append(argv, allowed)
+    argv[#argv + 1] = "--disallowedTools"
+    util.append(argv, denied)
+    return util.append(argv, { "-n", checker_label(e) })
+  end,
+  session_after_start = function(_, e)
+    return e.checker_session
+  end,
+  name = function(_, e)
+    return M.claude_name(e.worktree, e.checker_session)
+  end,
+  effort = function(_, e)
+    return e.checker_session and M.claude_effort(e.worktree, e.checker_session) or nil
+  end,
+}
+
+-- Codex: the reviewers' flags, plus network in the sandbox, which the rex
+-- CLI needs to reach the Rex server's socket for preview and post. Codex
+-- can't deny one command per session; rounds.post holds the review with
+-- post = "ask" instead. Its thread is found by cwd, like a reviewer's; the
+-- primary's thread in the same worktree is older than since.
+M.checkers.codex = {
+  program = "codex",
+  command = function(_, e, dirs)
+    e.checker_session = nil
+    local args = args_for("codex", M.reviewers.codex.defaults)
+    util.append(args, { "-c", "sandbox_workspace_write.network_access=true" })
+    util.append(args, config.load().checker_extra_args)
+    local argv = { "codex" }
+    util.append(argv, with_effort("codex", args, e.checker_effort))
+    add_dirs(argv, dirs)
+    return util.append(argv, { "-C", e.worktree })
+  end,
+  session_after_start = function(_, e, since)
+    for _ = 1, 15 do
+      local id = M.codex_thread(e.worktree, since)
+      if id then
+        return id
+      end
+      util.run({ "sleep", "2" })
+    end
+  end,
+  name = function(_, e)
+    return M.codex_name(e.checker_session)
+  end,
+  effort = function(_, e)
+    return e.checker_session and M.codex_effort(e.checker_session) or nil
+  end,
+  archive = function(_, id)
+    util.run({ "codex", "archive", id }, { check = false })
+  end,
+}
+
+-- The adapter for a round's checker: the agent it started as
+-- (e.checker_agent), so a change to config.checker mid-round doesn't read
+-- its session as another agent's. A round from before checker_agent was
+-- recorded falls back to the config.
+local function checker(e)
+  return M.checkers[e.checker_agent or config.load().checker]
+end
+
+function M.checker_program(e)
+  return checker(e).program
+end
+
+-- Starts the round's checker as config.checker and records it in
+-- e.checker_agent.
 function M.checker_command(e, dirs)
-  local c = config.load()
-  e.checker_session = uuid()
-  local argv = { "claude", "--session-id", e.checker_session }
-  util.append(argv, with_effort("claude", args_for("claude", { "--permission-mode", "auto" }), e.checker_effort))
-  add_dirs(argv, dirs)
-  local allowed = { "Bash(rex do reviewer_preview:*)" }
-  local denied = { "Bash(rex do reviewer_dismiss:*)" }
-  if c.post == "auto" then
-    allowed[#allowed + 1] = "Bash(rex do reviewer_post:*)"
-  else
-    denied[#denied + 1] = "Bash(rex do reviewer_post:*)"
-  end
-  argv[#argv + 1] = "--allowedTools"
-  util.append(argv, allowed)
-  argv[#argv + 1] = "--disallowedTools"
-  util.append(argv, denied)
-  return util.append(argv, { "-n", string.format("rex-reviewer %s#%d round %d check", e.repo, e.pr, e.round) })
+  e.checker_agent = config.load().checker
+  return checker(e):command(e, dirs)
+end
+
+-- The checker's session once it has taken its first prompt; since is when
+-- it started (epoch seconds).
+function M.checker_session_after_start(e, since)
+  return checker(e):session_after_start(e, since)
 end
 
 function M.checker_name(e)
-  return M.claude_name(e.worktree, e.checker_session)
+  return checker(e):name(e)
 end
 
 function M.checker_effort(e)
-  return e.checker_session and M.claude_effort(e.worktree, e.checker_session) or nil
+  return checker(e):effort(e)
+end
+
+-- Archive the Codex threads of a PR's checkers, as cleanup does the
+-- reviewers'. Claude Code keeps no list to archive.
+function M.archive_checkers(e)
+  for _, id in ipairs(type(e.checker_threads) == "table" and e.checker_threads or {}) do
+    M.checkers.codex:archive(id)
+  end
 end
 
 return M
