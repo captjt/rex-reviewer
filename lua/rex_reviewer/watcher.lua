@@ -341,7 +341,8 @@ function M.doctor()
     agents_used[#agents_used + 1] = r.agent
   end
   for _, agent in ipairs(agents_used) do
-    programs[#programs + 1] = agent
+    local a = c.agents[agent] or {}
+    programs[#programs + 1] = a.program and util.expand(a.program) or agent
     if agent == "codex" then
       programs[#programs + 1] = "sqlite3"
     end

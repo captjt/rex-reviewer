@@ -22,6 +22,13 @@ local function add_dirs(argv, dirs)
   return argv
 end
 
+-- The program to run for an agent: agents.<name>.program, a name on PATH
+-- or a path, when set; else its own name.
+function M.program(name)
+  local a = config.load().agents[name] or {}
+  return util.expand(a.program or name)
+end
+
 -- The adapter's own args, replaced by agents.<name>.args when set, plus
 -- what the host needs (Codex's --no-daemon on Herdr), plus
 -- agents.<name>.extra_args.
@@ -224,7 +231,7 @@ M.reviewers.codex = {
     "-c", 'plugins."github@openai-curated".enabled=false',
   },
   command = function(self, _, r, dirs, extra)
-    local argv = { "codex" }
+    local argv = { M.program("codex") }
     if r.session then
       util.append(argv, { "resume", r.session })
     end
@@ -252,7 +259,7 @@ M.reviewers.codex = {
   end,
   archive = function(_, r)
     if r.session then
-      util.run({ "codex", "archive", r.session }, { check = false })
+      util.run({ M.program("codex"), "archive", r.session }, { check = false })
     end
   end,
 }
@@ -261,7 +268,7 @@ M.reviewers.claude = {
   program = "claude",
   defaults = { "--permission-mode", "auto" },
   command = function(self, e, r, dirs, extra)
-    local argv = { "claude" }
+    local argv = { M.program("claude") }
     if r.session then
       util.append(argv, { "--resume", r.session })
     else
@@ -327,7 +334,7 @@ M.checkers.claude = {
   command = function(_, e, dirs)
     local c = config.load()
     e.checker_session = uuid()
-    local argv = { "claude", "--session-id", e.checker_session }
+    local argv = { M.program("claude"), "--session-id", e.checker_session }
     local args = util.append(args_for("claude", { "--permission-mode", "auto" }), c.checker_extra_args)
     util.append(argv, with_effort("claude", args, e.checker_effort))
     add_dirs(argv, dirs)
@@ -368,7 +375,7 @@ M.checkers.codex = {
     local args = args_for("codex", M.reviewers.codex.defaults)
     util.append(args, { "-c", "sandbox_workspace_write.network_access=true" })
     util.append(args, config.load().checker_extra_args)
-    local argv = { "codex" }
+    local argv = { M.program("codex") }
     util.append(argv, with_effort("codex", args, e.checker_effort))
     add_dirs(argv, dirs)
     return util.append(argv, { "-C", e.worktree })
@@ -389,7 +396,7 @@ M.checkers.codex = {
     return e.checker_session and M.codex_effort(e.checker_session) or nil
   end,
   archive = function(_, id)
-    util.run({ "codex", "archive", id }, { check = false })
+    util.run({ M.program("codex"), "archive", id }, { check = false })
   end,
 }
 

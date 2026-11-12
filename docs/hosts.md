@@ -111,7 +111,11 @@ The phone app shows banners only while it's open.
 - The checker opens to the right of the reviewers; in Rex it opens on
   their left.
 - herdr-core starts programs in its own environment. `bin/hc-agent` gives
-  each agent the PATH rex-reviewer found it on.
+  each agent the PATH rex-reviewer found it on, which puts `~/.local/bin`
+  first. If that holds an older Claude Code or Codex than the one you use,
+  set `agents.claude.program` (or `agents.codex.program`) to the right one:
+  an agent too old to report its status never counts as ready, and the
+  round's start times out.
 - Codex gets `--no-daemon`, without which its commands run outside the
   terminal.
 - A round's panes outlive the app's window, and a reboot: the app keeps a

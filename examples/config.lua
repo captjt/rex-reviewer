@@ -100,7 +100,13 @@ return {
       -- Turn off MCP servers the reviewer shouldn't use:
       -- extra_args = { "-c", "mcp_servers.linear.enabled=false" },
     },
-    claude = {},
+    claude = {
+      -- The program to run, when the one first on PATH isn't the one you
+      -- use. On Herdr, agents start in herdr-core's login environment, which
+      -- can find an older install than your shell does. `rex-reviewer doctor`
+      -- shows the one in use.
+      -- program = "/opt/homebrew/bin/claude",
+    },
   },
 
   hooks = {
