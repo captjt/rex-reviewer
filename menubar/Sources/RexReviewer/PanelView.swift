@@ -103,7 +103,7 @@ struct HeaderView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(status == .stopped || status == .down)
-                .help("Show the watcher in Rex")
+                .help("Show the watcher in \(store.state.hostApp)")
             case .recap:
                 Picker("Range", selection: $range) {
                     ForEach(RecapRange.allCases) { Text($0.rawValue).tag($0) }
@@ -215,7 +215,7 @@ struct AttentionRow: View {
     var body: some View {
         let entry = store.entry(item.repo, item.pr)
         let reviewing = entry?.state == "reviewing"
-        RowButton(help: reviewing ? "Show its tab in Rex" : "Show the watcher in Rex") {
+        RowButton(help: reviewing ? "Show its tab in \(store.state.hostApp)" : "Show the watcher in \(store.state.hostApp)") {
             store.show(reviewing ? entry : nil)
         } content: {
             RowLayout(number: item.pr, title: entry?.title ?? item.repo, trailing: nil) {
@@ -235,7 +235,7 @@ struct ReadyRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            RowButton(help: "Show its tab in Rex") {
+            RowButton(help: "Show its tab in \(store.state.hostApp)") {
                 store.show(entry)
             } content: {
                 RowLayout(
@@ -270,7 +270,7 @@ struct RoundRow: View {
 
     var body: some View {
         let blocked = store.roundStatus[entry.id]?.hasPrefix("BLOCKED") == true
-        RowButton(help: "Show its tab in Rex") {
+        RowButton(help: "Show its tab in \(store.state.hostApp)") {
             store.show(entry)
         } content: {
             RowLayout(
@@ -396,7 +396,7 @@ struct LinkMenu: View {
     var body: some View {
         if let entry {
             if showTab {
-                Button("Show Tab in Rex") { store.show(entry) }
+                Button("Show Tab in \(store.state.hostApp)") { store.show(entry) }
             }
             Button("Open PR on GitHub") { store.open(entry.url) }
             if entry.reviewURL != nil {
