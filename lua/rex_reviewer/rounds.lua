@@ -38,10 +38,33 @@ local function rex_agent(args)
   return util.append(argv, args)
 end
 
+-- rex-agent takes pane names of [a-z][a-z0-9_-]{0,31}.
+local PANE_MAX = 32
+
+-- The repo part of a PR's pane names: the repo's name in lowercase, with a
+-- dash for anything rex-agent doesn't allow. A long name is cut so the PR's
+-- longest pane, its checker's or a reviewer's, still fits, and every pane
+-- of the PR keeps the same prefix.
+function M.pane_prefix(e)
+  local _, repo_name = util.split_slug(e.repo)
+  local prefix = (repo_name or "pr"):lower():gsub("[^a-z0-9_-]", "-")
+  if not prefix:match("^[a-z]") then
+    prefix = "pr-" .. prefix
+  end
+  local longest = #"check"
+  for _, cr in ipairs(config.load().reviewer_list or {}) do
+    longest = math.max(longest, #cr.name)
+  end
+  local room = PANE_MAX - #string.format("-%d-", e.pr) - longest
+  if #prefix > room then
+    prefix = prefix:sub(1, math.max(room, 1)):gsub("[-_]+$", "")
+  end
+  return prefix
+end
+
 -- The pane of the primary reviewer, or of the reviewer named.
 function M.reviewer_pane(e, name)
-  local _, repo_name = util.split_slug(e.repo)
-  local pane = string.format("%s-%d", repo_name, e.pr)
+  local pane = string.format("%s-%d", M.pane_prefix(e), e.pr)
   return name and (pane .. "-" .. name) or pane
 end
 
