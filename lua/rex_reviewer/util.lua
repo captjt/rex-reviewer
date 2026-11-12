@@ -1,5 +1,7 @@
 -- Commands, files, and time: the small helpers the other modules share.
 
+local runtime = require("rex_reviewer.runtime")
+
 local M = {}
 
 local HOME = os.getenv("HOME")
@@ -44,7 +46,7 @@ function M.run(argv, opts)
   for k, v in pairs(opts.env or {}) do
     env[k] = v
   end
-  local res = rex.exec.start(argv, { cwd = opts.cwd or HOME, env = env }):wait()
+  local res = runtime.exec(argv, { cwd = opts.cwd or HOME, env = env })
   if opts.check ~= false and not res.ok then
     local err = (res.stderr ~= "" and res.stderr) or res.stdout or ""
     error(string.format("%s exited %s: %s", table.concat(argv, " "):sub(1, 120), tostring(res.code), err:sub(1, 600)), 0)
@@ -130,11 +132,11 @@ end
 
 -- Lua writes an empty table as {}. Readers of the ledger accept both.
 function M.json(v)
-  return rex.json.encode(v)
+  return runtime.encode(v)
 end
 
 function M.decode(s)
-  local ok, v = pcall(rex.json.decode, s or "")
+  local ok, v = pcall(runtime.decode, s or "")
   return ok and v or nil
 end
 

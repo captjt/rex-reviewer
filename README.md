@@ -22,6 +22,12 @@ tokens. A menu bar app shows what's happening.
 > Rex is in private beta. rex-reviewer needs a Rex build with Lua actions,
 > `rex do` scripts, and the program status that Claude Code and Codex report.
 
+It also runs on [Herdr](https://herdr.dev): herdr-core runs the panes, the
+Herdr app shows each PR's reviewers side by side in a tab, and the Herdr
+phone app lists a review waiting for you, which you can post from there.
+Set `host = "herdr"` in the config; [`docs/hosts.md`](docs/hosts.md) covers
+the setup and the differences.
+
 ## How a round works
 
 1. **The request.** The watcher checks GitHub every few minutes for open PRs
@@ -46,7 +52,8 @@ tokens. A menu bar app shows what's happening.
 
 ## Requirements
 
-- macOS and Rex
+- macOS, and Rex, or Herdr's herdr-core 0.1.20 or later with LuaJIT
+  (see [`docs/hosts.md`](docs/hosts.md))
 - [`gh`](https://cli.github.com), signed in as the account that reviews,
   plus `git` and `jq`
 - A reviewer: [Codex](https://github.com/openai/codex) (which also needs
@@ -237,7 +244,8 @@ add an adapter to [`lua/rex_reviewer/agents.lua`](lua/rex_reviewer/agents.lua).
   head. Agents may build and test there, and write to your package caches,
   but not commit or push.
 - `gh` is signed out in the agents' panes, so they can't reach GitHub. The
-  posting script runs as a Rex action, outside their sandbox.
+  posting script runs as an action outside their sandbox: the Rex server
+  runs it in Rex, and the watcher on Herdr.
 - The checker may run the preview action. With `post = "auto"` it may also
   run the post action. Claude Code's deny rules keep it from posting or
   dismissing with `post = "ask"`.
@@ -273,7 +281,8 @@ The menu bar app has two tabs.
   the queue, and the last week of reviews. You can pause, check GitHub now,
   and stop or start the watcher from it. Clicking a round shows its tab in
   Rex. That needs Rex's Remote Control setting (Settings, Rex Server);
-  without it, the app says so.
+  without it, the app says so. On Herdr, it shows the tab in the Herdr
+  app.
 - **Recap** sums up today, this week, or the last 30 days:
   - reviews posted, with a per-day sparkline and the change from the period
     before;
@@ -301,7 +310,8 @@ rex-reviewer pause | resume | check | up | down
 ```
 
 Each is a Rex action too, such as `rex do reviewer_post pr=123`, so you can
-bind them to keys.
+bind them to keys. `rex-reviewer do reviewer_post pr=123` runs one on
+either host.
 
 ### With rex-inbox
 
@@ -329,14 +339,15 @@ on them too.
 
 ```
 init.lua                 the Rex actions
-scripts/                 the watcher, starting a round, replaying a PR
-lua/rex_reviewer/        config, ledger, rules, GitHub, agents, rounds, watcher, status records
-tests/                   checks that run in plain Lua: luajit tests/status.lua
+scripts/                 the watchers, the CLI under LuaJIT, the post terminal, starting a round, replaying a PR
+lua/rex_reviewer/        config, ledger, rules, GitHub, agents, rounds, watcher, status records, actions
+lua/rex_reviewer/hosts/  Rex and Herdr: where the panes run
+tests/                   luajit tests/*.lua; tests/hc-agent.sh against herdr-core
 briefs/                  the prompts, with their optional parts
 guides/                  the default style guide and merge-risk rubric
-bin/                     rex-reviewer, post-review, rex-agent, token-usage
+bin/                     rex-reviewer, post-review, rex-agent, hc-agent, token-usage
 menubar/                 the SwiftUI menu bar app
-docs/                    the ledger and the review draft
+docs/                    the ledger, the review draft, and the hosts
 ```
 
 ## Limits

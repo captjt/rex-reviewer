@@ -1,4 +1,4 @@
-5. Run `rex do reviewer_preview {{ACTION_ARGS}}` and read the preview.
+5. Run `{{PREVIEW_CMD}}` and read the preview.
    {{LOGIN}} reads it and decides whether to post it.
    - Run it as the bare command, exactly as written, from this worktree: no
      `cd`, pipe, redirect, `;`, or `echo` around it. Only the bare command is

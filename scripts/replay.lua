@@ -16,11 +16,12 @@ local ledger = require("rex_reviewer.ledger")
 local rules = require("rex_reviewer.rules")
 local github = require("rex_reviewer.github")
 
-local pr = tonumber(rex.args.pr)
+local args = require("rex_reviewer.runtime").args()
+local pr = tonumber(args.pr)
 if not pr then
   error("usage: rex do replay.lua pr=<number> [repo=owner/name]", 0)
 end
-local repo = config.repo(rex.args.repo, pr, ledger).slug
+local repo = config.repo(args.repo, pr, ledger).slug
 local owner, name = util.split_slug(repo)
 local query = [[
 query($o: String!, $n: String!, $pr: Int!) {
@@ -42,7 +43,7 @@ query($o: String!, $n: String!, $pr: Int!) {
   } }
 }]]
 local res = util.run({ "gh", "api", "graphql", "-F", "pr=" .. pr, "-f", "o=" .. owner, "-f", "n=" .. name, "-f", "query=" .. query })
-local p = rex.json.decode(res.stdout).data.repository.pullRequest
+local p = util.decode(res.stdout).data.repository.pullRequest
 
 local me = github.login()
 local gh = { state = "OPEN", requested = false }

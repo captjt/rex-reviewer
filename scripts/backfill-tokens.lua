@@ -21,8 +21,9 @@ local ledger = require("rex_reviewer.ledger")
 local rules = require("rex_reviewer.rules")
 local rounds = require("rex_reviewer.rounds")
 
-local save = rex.args.save == true or rex.args.save == "true"
-local also = rex.args.also and util.expand(rex.args.also)
+local args = require("rex_reviewer.runtime").args()
+local save = args.save == true or args.save == "true"
+local also = args.also and util.expand(args.also)
 
 -- The worktrees the PR's agents may have run in: every reviewer's.
 local function worktrees(e)
@@ -112,4 +113,4 @@ for _, e in ipairs(ledger.list()) do
   end
 end
 
-print(rex.json.encode({ dry_run = not save, prs = report }))
+print(util.json({ dry_run = not save, prs = report }))

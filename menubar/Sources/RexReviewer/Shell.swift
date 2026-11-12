@@ -14,11 +14,12 @@ enum Shell {
         }
     }
 
-    /// lib.lua's M.PATH. An app opened from Finder gets only the system
-    /// directories, and rex and rex-agent live elsewhere.
+    /// util.lua's M.PATH. An app opened from Finder gets only the system
+    /// directories, and rex, hc and luajit live elsewhere.
     static let path: String = {
         let home = NSHomeDirectory()
         return [
+            home + "/.local/bin",
             home + "/.bin",
             "/opt/homebrew/bin",
             home + "/.nix-profile/bin",
@@ -58,6 +59,19 @@ enum Shell {
 
     static func rex(_ arguments: [String]) -> Result {
         run("/usr/bin/env", ["rex"] + arguments)
+    }
+
+    /// An action, by name with its key=value args, on the config's host:
+    /// through the checkout's bin/rex-reviewer when the watcher has said
+    /// where that is, else `rex do`.
+    static func action(root: String?, _ arguments: [String]) -> Result {
+        if let root {
+            let cli = root + "/bin/rex-reviewer"
+            if FileManager.default.isExecutableFile(atPath: cli) {
+                return run(cli, ["do"] + arguments)
+            }
+        }
+        return rex(["do"] + arguments)
     }
 
     /// Whether something accepts connections on the unix socket at path.

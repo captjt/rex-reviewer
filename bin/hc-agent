@@ -1,0 +1,567 @@
+#!/usr/bin/env bash
+# hc-agent: run coding agents in herdr-core terminals and drive them by name.
+#
+# The same commands, JSON and exit codes as bin/rex-agent, on herdr-core's
+# `hc` instead of Rex, so rex-reviewer drives either host the same way.
+# herdr-core keeps the OSC 7501 program status that Claude Code and Codex
+# report; this adds the agent layer: start an agent and wait until it is
+# ready, submit a prompt and wait for its turn, and refuse to type into an
+# agent that is waiting on an approval.
+#
+# Where a terminal shows is up to its labels. herdr.space and herdr.tab put
+# it in a space and tab of the Herdr app, which splits a tab's terminals
+# side by side, and the phone app draws the same tab.
+set -euo pipefail
+
+prog=hc-agent
+poll=0.25
+stall_after=10
+app=${HC_AGENT_APP:-rex-reviewer}
+prefix=${HC_AGENT_PREFIX:-rr-}
+
+usage() {
+	cat <<'EOF'
+hc-agent: run coding agents in herdr-core terminals and drive them by name.
+
+Usage:
+  hc-agent start NAME -s SPACE [options] [-- AGENT_ARGS...]
+      Start the agent in a new terminal named NAME, in SPACE of the Herdr
+      app, and wait until it reports idle.
+        --kind PROGRAM   program to run (default: claude; also codex, or any)
+        --tab            open a new tab (the default without --anchor)
+        --tab-id ID      the new tab's id within the space (default: NAME)
+        --anchor PANE    join PANE's tab, to the right of its last pane
+        --split DIR      accepted for rex-agent's sake; the app splits right
+        --cwd DIR        working directory (default: current directory)
+        --focus          show it in the Herdr app
+        --timeout SECS   give up waiting for ready (default 120)
+        --plain          a program, not an agent: don't wait for it
+        --rm             remove the terminal once its program exits
+        --role ROLE      label its role (default: agent)
+        --no-watch       leave out the label the watcher follows events by
+
+  hc-agent prompt NAME TEXT|- [--wait] [--timeout SECS] [--force]
+      Paste TEXT (or stdin with -) into the agent and press Enter. Refuses
+      an agent that is blocked, and one that is working unless --force.
+      With --wait, waits until the turn settles (idle, done, blocked, or
+      error). No timeout by default.
+
+  hc-agent wait NAME [--until STATE] [--timeout SECS]
+      Wait until the agent is settled, or reaches STATE (idle, done,
+      blocked, error, working). Returns at once if it already is.
+
+  hc-agent get NAME          Print the agent's status as JSON.
+  hc-agent read NAME [--lines N]
+                             Print the last N lines (default 120, 0 for all).
+  hc-agent keys NAME KEY...  Press keys, such as esc, enter, or ctrl+c.
+  hc-agent list [-s SPACE] [--json]
+                             List the terminals hc-agent started, in SPACE
+                             when given.
+  hc-agent close NAME        End the program and remove its terminal.
+
+NAME is [a-z][a-z0-9_-]{0,31}, or a terminal address such as t7 or t1b. The
+terminal is named HC_AGENT_PREFIX (default rr-) and NAME, shortened with a
+hash past hc's 32 characters, so names are unique across the core.
+-s SPACE is accepted by every command, and needed only by start. A
+terminal where nothing has reported a status two minutes after it started
+counts as exited: it holds no agent.
+
+Exit status:
+  0  ready, idle, or done      4  error state, or the agent exited
+  1  usage or hc failure       5  timed out
+  2  no such agent, or name    6  prompt stalled: no activity within 10s
+     in use                    7  busy: agent is working (prompt --force)
+  3  blocked: the agent is waiting on you (approval, question, login)
+
+Results are JSON on stdout. Read a blocked agent's screen before answering it.
+EOF
+}
+
+die() {
+	local code=$1
+	shift
+	printf '%s: %s\n' "$prog" "$*" >&2
+	exit "$code"
+}
+
+# The terminal for NAME: an address as it is, else the prefixed name.
+terminal() {
+	local n=$1
+	if [[ $n =~ ^t[0-9a-f]+$ || $n == */* ]]; then
+		printf '%s\n' "$n"
+		return
+	fi
+	local full=$prefix$n
+	if ((${#full} <= 32)); then
+		printf '%s\n' "$full"
+		return
+	fi
+	local h
+	h=$(printf '%s' "$n" | cksum | awk '{ printf "%06x", $1 % 16777216 }')
+	printf '%s\n' "${full:0:25}-$h"
+}
+
+# The terminal's record as JSON. Fails when there is none.
+record() {
+	hc get "$1" --json 2>/dev/null
+}
+
+# The record of a live terminal, or exit: 2 when there's none, 4 when its
+# program has ended, or when nothing in it has reported a status two
+# minutes after it started. That's a shell where an agent was: the Herdr
+# app keeps the terminals it shows, and after a reboot each comes back as a
+# shell, where in Rex the pane would be gone.
+live_record() {
+	local rec
+	rec=$(record "$1") || die 2 "not_found: no terminal named '$2'"
+	if [[ $(jq -r .state <<<"$rec") != live ]]; then
+		die 4 "$2 has exited"
+	fi
+	if [[ $(jq -r '.status == null and (.reported | not) and (now - (.created_ms / 1000) >= 120)' <<<"$rec") == true ]]; then
+		die 4 "$2 has no agent: nothing in it has reported a status"
+	fi
+	printf '%s\n' "$rec"
+}
+
+state_of() {
+	jq -r 'if .state != "live" then "exited" else (.status.state // "") end' <<<"$1"
+}
+
+emit() {
+	local name=$1 rec=$2 extra=${3:-'{}'}
+	jq -nc --arg name "$name" --argjson rec "$rec" --argjson extra "$extra" --argjson now "$(date +%s)" '
+		{name: $name, block_id: $rec.address, state: ($rec.status.state // "unknown"),
+		 kind: $rec.status.kind, msg: $rec.status.msg, app: $rec.status.app,
+		 updated_at: (if $rec.status_ms then ($rec.status_ms / 1000 | floor | todate) else null end),
+		 title: (if ($rec.title // "") == "" then null else $rec.title end),
+		 turn: $rec.turn, live: ($rec.state == "live"),
+		 age_s: (if $rec.created_ms then ($now - ($rec.created_ms / 1000 | floor)) else null end),
+		 labels: $rec.labels}
+		+ $extra | with_entries(select(.value != null))'
+}
+
+state_code() {
+	case $1 in
+	blocked) echo 3 ;;
+	error | exited) echo 4 ;;
+	*) echo 0 ;;
+	esac
+}
+
+settles() {
+	case $1 in idle | done | blocked | error) return 0 ;; *) return 1 ;; esac
+}
+
+# wait_for TERMINAL UNTIL TIMEOUT [BASE_TURN]
+#
+# Print the record that ends the wait. UNTIL is "settled" or a state.
+# TIMEOUT is in seconds, 0 for none. With BASE_TURN (the turn before a
+# prompt was sent), only a turn after it counts: herdr-core's turn goes up
+# each time the agent stops working. No activity within $stall_after
+# seconds is a stall.
+#
+# Returns 0 when matched, 4 when the program ended, 5 on timeout, 6 on stall.
+wait_for() {
+	local t=$1 until=$2 timeout=$3 base=${4-} gated=0
+	local start=$SECONDS active=0 rec state turn
+	[[ $# -ge 4 ]] && gated=1
+
+	while :; do
+		if ! rec=$(record "$t"); then
+			printf '{"state":"exited"}\n'
+			return 4
+		fi
+		state=$(state_of "$rec")
+		if [[ $state == exited ]]; then
+			printf '%s\n' "$rec"
+			return 4
+		fi
+
+		if [[ $gated == 0 ]]; then
+			if [[ $until == settled ]] && settles "$state"; then
+				printf '%s\n' "$rec"
+				return 0
+			fi
+			if [[ $until == "$state" ]]; then
+				printf '%s\n' "$rec"
+				return 0
+			fi
+		else
+			turn=$(jq -r '.turn // 0' <<<"$rec")
+			# Working, a question, or an error after the prompt, or a turn
+			# that ended since, prove it started.
+			if [[ $state == working || $state == blocked || $state == error ]] || ((turn > base)); then
+				active=1
+			fi
+			if [[ $active == 1 ]] && settles "$state"; then
+				printf '%s\n' "$rec"
+				return 0
+			fi
+			if [[ $active == 0 ]] && ((SECONDS - start >= stall_after)); then
+				printf '%s\n' "$rec"
+				return 6
+			fi
+		fi
+
+		if [[ $timeout != 0 ]] && ((SECONDS - start >= timeout)); then
+			printf '%s\n' "$rec"
+			return 5
+		fi
+		sleep "$poll"
+	done
+}
+
+# The screen and recent history as text, with trailing spaces removed and
+# runs of blank lines squeezed to one.
+capture() {
+	hc read "$1" --lines "${2:-200}" |
+		awk '{ sub(/[ \t]+$/, "") } /^$/ { blank = 1; next } { if (blank && seen) print ""; blank = 0; seen = 1; print }'
+}
+
+screen_tail() {
+	capture "$1" 2>/dev/null | tail -n "${2:-20}" >&2 || true
+}
+
+# Best effort: name a tab in the open Herdr app once it has placed the
+# terminal. Without an app, nothing happens.
+name_tab() {
+	local tab=$1 name=$2
+	command -v herdr-app >/dev/null || return 0
+	(
+		sleep 3
+		herdr-app do tab.rename "$(jq -nc --arg id "$tab" --arg name "$name" '{id: $id, name: $name}')"
+	) >/dev/null 2>&1 &
+}
+
+cmd_start() {
+	local name="" kind=claude tab=0 tab_id="" anchor="" cwd=$PWD focus=0 timeout=120
+	local plain=0 rm=0 role=agent watch=1
+	local -a agent_args=()
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+		--kind) kind=$2; shift 2 ;;
+		--tab) tab=1; shift ;;
+		--tab-id) tab_id=$2; shift 2 ;;
+		--split | --ratio) shift 2 ;;
+		--anchor) anchor=$2; shift 2 ;;
+		--cwd) cwd=$2; shift 2 ;;
+		--focus) focus=1; shift ;;
+		--timeout) timeout=$2; shift 2 ;;
+		--plain) plain=1; shift ;;
+		--rm) rm=1; shift ;;
+		--role) role=$2; shift 2 ;;
+		--no-watch) watch=0; shift ;;
+		-s | --session) space=$2; shift 2 ;;
+		--) shift; agent_args=("$@"); break ;;
+		-*) die 1 "start: unknown option $1" ;;
+		*) [[ -z $name ]] || die 1 "start: unexpected argument $1"; name=$1; shift ;;
+		esac
+	done
+	[[ -n $name ]] || die 1 "start: NAME is required"
+	[[ $name =~ ^[a-z][a-z0-9_-]{0,31}$ ]] || die 2 "start: invalid name '$name': use [a-z][a-z0-9_-]{0,31}"
+	[[ ! $name =~ ^t[0-9a-f]+$ ]] || die 2 "start: invalid name '$name': it looks like a terminal address"
+	[[ -n ${space:-} ]] || die 1 "start: -s SPACE is required"
+	command -v "$kind" >/dev/null || die 1 "start: '$kind' is not on PATH"
+
+	local t rec
+	t=$(terminal "$name")
+	if rec=$(record "$t"); then
+		[[ $(jq -r .state <<<"$rec") != live ]] || die 2 "start: a terminal named '$t' is already running"
+		hc rm "$t" --json >/dev/null 2>&1 || true
+	fi
+
+	# The tab: the anchor's, or a new one in the space.
+	local tab_label="" new_tab=0
+	if [[ $tab == 0 && -n $anchor ]]; then
+		local arec
+		arec=$(record "$(terminal "$anchor")") || die 2 "start: no terminal named '$anchor' to join"
+		tab_label=$(jq -r '.labels["herdr.tab"] // empty' <<<"$arec")
+	fi
+	if [[ -z $tab_label ]]; then
+		tab_label="$space.${tab_id:-$name}"
+		new_tab=1
+	fi
+
+	local -a run_args=(run --bg --json --no-parent --name "$t" --cwd "$cwd"
+		--label "$app.pane=$name" --label "$app.role=$role"
+		--label "herdr.space=$space" --label "herdr.tab=$tab_label")
+	[[ $watch == 1 ]] && run_args+=(--label "$app=1")
+	[[ $rm == 1 ]] && run_args+=(--rm)
+
+	# The core starts programs in its own environment; give them this PATH,
+	# where rex-reviewer found the agents.
+	local created
+	created=$(hc "${run_args[@]}" -- env PATH="$PATH" "$kind" ${agent_args[@]+"${agent_args[@]}"}) ||
+		die 1 "start: hc run failed"
+	[[ $new_tab == 1 ]] && name_tab "$tab_label" "${tab_id:-$name}"
+	if [[ $focus == 1 ]] && command -v herdr-app >/dev/null; then
+		herdr-app do agent.focus "$(jq -nc --arg t "$(jq -r .address <<<"$created")" '{terminal: $t}')" >/dev/null 2>&1 || true
+	fi
+
+	local extra
+	extra=$(jq -nc --arg kind "$kind" --arg space "$space" --arg tab "$tab_label" '{program: $kind, session_id: $space, tab: $tab}')
+	if [[ $plain == 1 ]]; then
+		rec=$(record "$t") || rec=$(jq -c '. + {state: "live"}' <<<"$created")
+		emit "$name" "$rec" "$extra"
+		exit 0
+	fi
+
+	local code=0
+	rec=$(wait_for "$t" settled "$timeout") || code=$?
+	case $code in
+	0)
+		emit "$name" "$rec" "$extra"
+		code=$(state_code "$(state_of "$rec")")
+		if [[ $code == 3 ]]; then
+			printf '%s: agent_not_ready: %s is blocked during startup; read its screen before answering\n' "$prog" "$name" >&2
+		fi
+		exit "$code"
+		;;
+	4)
+		[[ $rec == '{"state":"exited"}' ]] || emit "$name" "$rec" "$extra"
+		die 4 "start: $name exited during startup"
+		;;
+	*)
+		emit "$name" "$rec" "$extra"
+		printf '%s: agent_not_ready: %s reported no idle status within %ss. Screen:\n' "$prog" "$name" "$timeout" >&2
+		screen_tail "$t"
+		exit 5
+		;;
+	esac
+}
+
+cmd_prompt() {
+	local name="" text="" have_text=0 wait=0 timeout=0 force=0
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+		--wait) wait=1; shift ;;
+		--timeout) timeout=$2; shift 2 ;;
+		--force) force=1; shift ;;
+		-s | --session) shift 2 ;;
+		-) [[ -n $name ]] || die 1 "prompt: NAME comes before TEXT"; text=$(cat); have_text=1; shift ;;
+		--)
+			shift
+			if [[ $# -gt 0 ]]; then text=$1; have_text=1; shift; fi
+			;;
+		-*) die 1 "prompt: unknown option $1" ;;
+		*)
+			if [[ -z $name ]]; then name=$1
+			elif [[ $have_text == 0 ]]; then text=$1; have_text=1
+			else die 1 "prompt: unexpected argument $1"
+			fi
+			shift
+			;;
+		esac
+	done
+	[[ -n $name ]] || die 1 "prompt: NAME is required"
+	[[ $have_text == 1 && -n $text ]] || die 1 "prompt: TEXT is required (use - for stdin)"
+
+	local t rec state base
+	t=$(terminal "$name")
+	rec=$(live_record "$t" "$name")
+	state=$(state_of "$rec")
+	if [[ $state == blocked ]]; then
+		emit "$name" "$rec"
+		die 3 "agent_blocked: $name is waiting on you; nothing was sent. Read it with: $prog read $name"
+	fi
+	if [[ $state == working && $force == 0 ]]; then
+		emit "$name" "$rec"
+		die 7 "agent_busy: $name is working; nothing was sent. Wait with '$prog wait $name' or pass --force"
+	fi
+	base=$(jq -r '.turn // 0' <<<"$rec")
+
+	# hc pastes the text and presses Enter as one submission, after any
+	# draft a person is typing there (up to 60 s). It never answers a
+	# blocked agent's dialog without its own --force, which this never
+	# passes.
+	local sent code=0
+	sent=$(hc send "$t" "$text" --json 2>&1) || code=$?
+	case $code in
+	0) ;;
+	9) die 3 "agent_blocked: $name started waiting on you; nothing was sent" ;;
+	11) die 4 "prompt: $name has exited" ;;
+	*) die 1 "prompt: hc send failed: $sent" ;;
+	esac
+
+	if [[ $wait == 0 ]]; then
+		emit "$name" "$rec" '{"submitted":true}'
+		exit 0
+	fi
+
+	local start=$SECONDS
+	code=0
+	rec=$(wait_for "$t" settled "$timeout" "$base") || code=$?
+	local extra
+	extra=$(jq -nc --argjson s "$((SECONDS - start))" '{submitted: true, elapsed_s: $s}')
+	[[ $rec == '{"state":"exited"}' ]] || emit "$name" "$rec" "$extra"
+	case $code in
+	0) exit "$(state_code "$(state_of "$rec")")" ;;
+	4) die 4 "prompt: $name exited" ;;
+	5) die 5 "timeout: $name is still $(state_of "$rec") after ${timeout}s; the prompt was delivered, so don't resend it" ;;
+	6) die 6 "agent_prompt_stalled: $name showed no activity within ${stall_after}s. Check '$prog read $name' before resending" ;;
+	esac
+}
+
+cmd_wait() {
+	local name="" until=settled timeout=0
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+		--until) until=$2; shift 2 ;;
+		--timeout) timeout=$2; shift 2 ;;
+		-s | --session) shift 2 ;;
+		-*) die 1 "wait: unknown option $1" ;;
+		*) [[ -z $name ]] || die 1 "wait: unexpected argument $1"; name=$1; shift ;;
+		esac
+	done
+	[[ -n $name ]] || die 1 "wait: NAME is required"
+	case $until in settled | idle | done | blocked | error | working) ;; *) die 1 "wait: unknown state '$until'" ;; esac
+
+	local t rec code=0
+	t=$(terminal "$name")
+	live_record "$t" "$name" >/dev/null
+	rec=$(wait_for "$t" "$until" "$timeout") || code=$?
+	[[ $rec == '{"state":"exited"}' ]] || emit "$name" "$rec"
+	case $code in
+	0)
+		if [[ $until == settled ]]; then exit "$(state_code "$(state_of "$rec")")"; fi
+		exit 0
+		;;
+	4) die 4 "wait: $name exited" ;;
+	*) die 5 "timeout: $name is still $(state_of "$rec") after ${timeout}s" ;;
+	esac
+}
+
+cmd_get() {
+	local name=""
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+		-s | --session) shift 2 ;;
+		*) name=$1; shift ;;
+		esac
+	done
+	[[ -n $name ]] || die 1 "get: NAME is required"
+	local t rec
+	t=$(terminal "$name")
+	rec=$(live_record "$t" "$name")
+	emit "$name" "$rec"
+}
+
+cmd_read() {
+	local name="" lines=120
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+		--lines) lines=$2; shift 2 ;;
+		-s | --session) shift 2 ;;
+		-*) die 1 "read: unknown option $1" ;;
+		*) name=$1; shift ;;
+		esac
+	done
+	[[ -n $name ]] || die 1 "read: NAME is required"
+	local t
+	t=$(terminal "$name")
+	record "$t" >/dev/null || die 2 "not_found: no terminal named '$name'"
+	if [[ $lines == 0 ]]; then
+		capture "$t" 100000
+	else
+		capture "$t" "$lines" | tail -n "$lines"
+	fi
+}
+
+cmd_keys() {
+	local name=""
+	local -a keys=()
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+		-s | --session) shift 2 ;;
+		escape) keys+=(esc); shift ;;
+		*) if [[ -z $name ]]; then name=$1; else keys+=("$1"); fi; shift ;;
+		esac
+	done
+	[[ -n $name && ${#keys[@]} -gt 0 ]] || die 1 "keys: NAME and at least one KEY are required"
+	local t
+	t=$(terminal "$name")
+	live_record "$t" "$name" >/dev/null
+	hc keys "$t" "${keys[@]}" --json
+}
+
+cmd_list() {
+	local json=0 in_space=""
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+		--json) json=1; shift ;;
+		-s | --session) in_space=$2; shift 2 ;;
+		*) die 1 "list: unexpected argument $1" ;;
+		esac
+	done
+	# hc ls filters by label but leaves labels out of its records, so each
+	# terminal's own record names it.
+	local -a filter=(--label "$app.role=agent")
+	[[ -n $in_space ]] && filter+=(--label "herdr.space=$in_space")
+	local rows="[]" address rec
+	for address in $(hc ls --json "${filter[@]}" | jq -r '.terminals[].address'); do
+		rec=$(record "$address") || continue
+		rows=$(jq -c --arg app "$app" --arg me "${HC_TERMINAL_ID:-}" --argjson r "$rec" '. + [$r |
+			{name: .labels[$app + ".pane"], block_id: .address, app: .status.app, state: (.status.state // "unknown"),
+			 kind: .status.kind, msg: .status.msg, self: (.address == $me)} | with_entries(select(.value != null))]' <<<"$rows")
+	done
+	if [[ $json == 1 ]]; then
+		printf '%s\n' "$rows"
+	else
+		jq -r '(["NAME", "ID", "APP", "STATE", "MESSAGE"] | @tsv),
+		       (.[] | [(.name + (if .self then " (you)" else "" end)), .block_id, (.app // "-"),
+		               (.state + (if .kind then ":" + .kind else "" end)), (.msg // "")] | @tsv)' <<<"$rows" |
+			column -t -s $'\t'
+	fi
+}
+
+cmd_close() {
+	local name=""
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+		-s | --session) shift 2 ;;
+		*) name=$1; shift ;;
+		esac
+	done
+	[[ -n $name ]] || die 1 "close: NAME is required"
+	local t rec address
+	t=$(terminal "$name")
+	rec=$(record "$t") || die 2 "not_found: no terminal named '$name'"
+	address=$(jq -r .address <<<"$rec")
+	[[ $address != "${HC_TERMINAL_ID:-}" ]] || die 1 "close: refusing to close your own terminal"
+	if [[ $(jq -r .state <<<"$rec") == live ]]; then
+		hc kill "$address" --json >/dev/null 2>&1 || true
+	fi
+	hc rm "$address" --json >/dev/null 2>&1 || true
+	jq -nc --arg n "$name" --arg b "$address" '{name: $n, block_id: $b, closed: true}'
+}
+
+main() {
+	command -v hc >/dev/null || die 1 "hc (herdr-core) is not on PATH"
+	command -v jq >/dev/null || die 1 "jq is not on PATH"
+	space=${HC_AGENT_SPACE:-}
+
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+		-s | --session) space=$2; shift 2 ;;
+		-h | --help | help) usage; exit 0 ;;
+		*) break ;;
+		esac
+	done
+	[[ $# -gt 0 ]] || { usage >&2; exit 1; }
+
+	local cmd=$1
+	shift
+	case $cmd in
+	start) cmd_start "$@" ;;
+	prompt) cmd_prompt "$@" ;;
+	wait) cmd_wait "$@" ;;
+	get) cmd_get "$@" ;;
+	read) cmd_read "$@" ;;
+	keys) cmd_keys "$@" ;;
+	list | ls) cmd_list "$@" ;;
+	close) cmd_close "$@" ;;
+	*) die 1 "unknown command '$cmd' (see $prog --help)" ;;
+	esac
+}
+
+main "$@"

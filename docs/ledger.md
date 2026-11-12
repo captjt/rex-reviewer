@@ -27,8 +27,10 @@ written whole and renamed into place, so a reader never sees half of one.
 | `stopped` | `true` after `reviewer_down`, until a plain `reviewer_up` |
 | `last_scan_at` | the last successful GitHub check |
 | `login` | the GitHub account reviews post from |
+| `host` | where the watcher runs: `rex` or `herdr`; absent means Rex |
 | `session_id` | the Rex session the watcher runs in |
-| `watch_script` | the watcher script's path; `rex do <watch_script>` is its process |
+| `space` | on Herdr: the space the watcher runs in, the config's `session` |
+| `watch_script` | the watcher script's path; its process is `rex do <watch_script>` in Rex and `luajit <watch_script>` on Herdr |
 | `seq` | the last event's number |
 
 ## watcher.json
@@ -112,7 +114,8 @@ One entry per PR the tool has seen.
 | `additions`, `deletions`, `changed_files` | the PR's size at the last prep |
 | `started_at`, `posted_at`, `cleaned_at`, `created_at`, `updated_at` | times |
 | `worktree` | the PR's worktree, the primary reviewer's; `.tmp/status.txt` in it is the round's status |
-| `session_id`, `pane`, `checker_pane` | the Rex session, the primary reviewer's pane, and the checker's |
+| `session_id`, `pane`, `checker_pane` | the Rex session (on Herdr, the space), the primary reviewer's pane, and the checker's |
+| `ask_pane` | on Herdr, while a round waits for you: its post terminal |
 | `reviewer`, `reviewer_session`, `checker_session` | the primary reviewer's agent and session, and the checker's session |
 | `reviewers` | each reviewer's record, by name: `agent`, `session`, `worktree`, `pane`, `index` and `primary` (its place in the config), `first_round`, `tokens_seen` (its agent's count in its worktree at the last round's end), and `effort` (the level `effort` chose for its last round, absent for the agent's own) |
 | `round_reviewers` | the names of the reviewers in the round in progress, primary first |

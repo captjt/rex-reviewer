@@ -149,11 +149,25 @@ struct PipelineState: Decodable, Equatable, Sendable {
     var lastScanAt: String?
     var watchScript: String?
     var login: String?
+    /// Where the watcher runs: "rex" (or nil, before hosts) or "herdr".
+    var host: String?
 
     enum CodingKeys: String, CodingKey {
-        case paused, stopped, login
+        case paused, stopped, login, host
         case lastScanAt = "last_scan_at"
         case watchScript = "watch_script"
+    }
+
+    var onHerdr: Bool { host == "herdr" }
+
+    /// The app that shows the panes, by name.
+    var hostApp: String { onHerdr ? "Herdr" : "Rex" }
+
+    /// The checkout the watcher runs from: the folder above its script's.
+    var root: String? {
+        guard let script = watchScript else { return nil }
+        let url = URL(fileURLWithPath: script)
+        return url.deletingLastPathComponent().deletingLastPathComponent().path
     }
 }
 

@@ -8,10 +8,26 @@ local M = {}
 
 local HOME = util.HOME
 M.ROOT = nil -- the checkout of rex-reviewer, set by the entry point
-M.CONFIG_DIR = HOME .. "/.config/rex-reviewer"
-M.STATE_DIR = HOME .. "/.local/state/rex-reviewer"
-M.DATA_DIR = HOME .. "/.local/share/rex-reviewer"
-M.CACHE_DIR = HOME .. "/.cache/rex-reviewer"
+
+-- The tool's name, where it labels things it doesn't own: terminals, tabs,
+-- and status records. Renaming the tool starts here.
+M.APP = "rex-reviewer"
+
+-- Each folder can be moved with an environment variable, so tests run
+-- against their own. Rex's Lua sees the Rex server's environment, which
+-- doesn't set them.
+local function dir(var, default)
+  local v = os.getenv(var)
+  return (v and v ~= "") and v or default
+end
+
+M.CONFIG_DIR = dir("REX_REVIEWER_CONFIG_DIR", HOME .. "/.config/rex-reviewer")
+M.STATE_DIR = dir("REX_REVIEWER_STATE_DIR", HOME .. "/.local/state/rex-reviewer")
+M.DATA_DIR = dir("REX_REVIEWER_DATA_DIR", HOME .. "/.local/share/rex-reviewer")
+M.CACHE_DIR = dir("REX_REVIEWER_CACHE_DIR", HOME .. "/.cache/rex-reviewer")
+
+-- Where the panes run: Rex, or Herdr (herdr-core and its apps).
+M.HOSTS = { rex = true, herdr = true }
 
 -- Caches reviewers may write to, so no review copies the source or builds a
 -- private cache. Only the ones that exist are passed on.
@@ -67,12 +83,13 @@ local EFFORT_SLOTS = { review = true, check = true }
 local EFFORT_HINT = "low, medium, high, xhigh, or max"
 
 local DEFAULTS = {
+  host = "rex",
   reviewer = "codex",
   checker = "claude",
   post = "ask",
   max_rounds = 3,
   poll_seconds = 180,
-  session = "rex-reviewer",
+  session = M.APP,
   caches = DEFAULT_CACHES,
   extra_caches = {},
   path = {},
@@ -281,6 +298,13 @@ function M.load()
   -- The primary's agent, for code that names one reviewer.
   c.reviewer = c.reviewer_list[1].agent
   c.checker, c.checker_extra_args, c.checker_effort = normalize_checker(c.checker)
+  if not M.HOSTS[c.host] then
+    fail("host must be \"rex\" or \"herdr\", not " .. tostring(c.host))
+  end
+  -- On Herdr the session names a space and goes into terminal labels.
+  if c.host == "herdr" and (type(c.session) ~= "string" or not c.session:match("^[a-z][a-z0-9_.-]*$") or #c.session > 24) then
+    fail("on Herdr, session must be up to 24 lowercase letters, digits, dots, dashes, or underscores, starting with a letter")
+  end
   if not POST_MODES[c.post] then
     fail("post must be \"ask\" or \"auto\", not " .. tostring(c.post))
   end

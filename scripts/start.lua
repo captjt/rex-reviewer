@@ -4,18 +4,24 @@
 --
 -- Run reviewer_prep first. This is a script rather than an action because an
 -- agent can take about 30 s to start, and Rex cuts actions off at 30 s. The
--- watcher does both steps on its own; this is for starting one by hand.
+-- watcher does both steps on its own; this is for starting one by hand. On
+-- Herdr, `rex-reviewer start` runs the reviewer_start action instead.
 
 local ROOT = debug.getinfo(1, "S").source:gsub("^@", ""):match("^(.*)/scripts/[^/]+$")
 package.path = ROOT .. "/lua/?.lua;" .. package.path
 local config = require("rex_reviewer.config")
 config.set_root(ROOT)
+local util = require("rex_reviewer.util")
 local ledger = require("rex_reviewer.ledger")
 local rounds = require("rex_reviewer.rounds")
+local host = require("rex_reviewer.host")
 
-local pr = tonumber(rex.args.pr)
+local args = require("rex_reviewer.runtime").args()
+local pr = tonumber(args.pr)
 if not pr then
   error("usage: rex do start.lua pr=<number> [repo=owner/name]", 0)
 end
-local repo = config.repo(rex.args.repo, pr, ledger).slug
-print(rex.json.encode(rounds.start(repo, pr, rex.args.session or rex.session_id)))
+local repo = config.repo(args.repo, pr, ledger).slug
+local rex = rawget(_G, "rex")
+local session = args.session or (rex and host.name == "rex" and rex.session_id) or host.home_scope()
+print(util.json(rounds.start(repo, pr, session)))

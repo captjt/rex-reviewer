@@ -120,7 +120,8 @@ final class Store {
         }
     }
 
-    /// The watcher runs as `rex do <watch_script>`.
+    /// The watcher runs its script: `rex do <watch_script>` in Rex, and
+    /// `luajit <watch_script>` on Herdr.
     func checkWatcherProcess() async {
         if Snapshot.isActive { return }
         guard let script = state.watchScript else {
@@ -128,7 +129,7 @@ final class Store {
             return
         }
         // pgrep reads a regular expression; a path's dots match themselves too.
-        let pattern = "rex do " + script
+        let pattern = state.onHerdr ? "luajit " + script : "rex do " + script
         let running = await Task.detached {
             Shell.run("/usr/bin/pgrep", ["-f", pattern]).status == 0
         }.value
@@ -247,14 +248,15 @@ final class Store {
 
     // MARK: Actions
 
-    /// Run a rex-reviewer action with `rex do`, one at a time per key. Nil
+    /// Run a rex-reviewer action on its host, one at a time per key. Nil
     /// when it's already running or it failed; the failure goes to message.
     @discardableResult
     private func perform(_ key: String, _ arguments: [String]) async -> Shell.Result? {
         guard !pending.contains(key) else { return nil }
         pending.insert(key)
         message = nil
-        let result = await Task.detached { Shell.rex(["do"] + arguments + ["--json"]) }.value
+        let root = state.root
+        let result = await Task.detached { Shell.action(root: root, arguments + ["--json"]) }.value
         pending.remove(key)
         if result.status != 0 { message = result.failure }
         reload()
@@ -307,6 +309,12 @@ final class Store {
             guard let result = await perform("focus", ["reviewer_focus"] + (e?.actionArgs ?? [])) else { return }
             struct Focus: Decodable { let selected: Bool? }
             let focus = try? JSONDecoder().decode(Focus.self, from: Data(result.output.utf8))
+            // Herdr's action brings its own app forward; only Rex needs
+            // Remote Control to switch tabs.
+            if state.onHerdr {
+                if focus?.selected == false { message = "Open the Herdr app to show the tab." }
+                return
+            }
             remoteControlOff = focus?.selected == false
             if !remoteControlOff {
                 NSRunningApplication.runningApplications(withBundleIdentifier: "com.superlogical.rex").first?.activate()

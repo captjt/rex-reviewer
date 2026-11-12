@@ -1,6 +1,6 @@
 -- The watcher's logic: check GitHub, move each PR one step, and keep the
--- rex-reviewer session and its watcher pane alive. scripts/watch.lua runs
--- it; the actions in init.lua call the rest.
+-- watcher running on the host. scripts/watch.lua (Rex) and
+-- scripts/watch-herdr.lua (Herdr) run it; the actions call the rest.
 
 local util = require("rex_reviewer.util")
 local config = require("rex_reviewer.config")
@@ -8,35 +8,18 @@ local ledger = require("rex_reviewer.ledger")
 local rules = require("rex_reviewer.rules")
 local github = require("rex_reviewer.github")
 local rounds = require("rex_reviewer.rounds")
+local host = require("rex_reviewer.host")
 
 local M = {}
 
-local function rex_cli(args)
-  return util.run(util.append({ "rex" }, args))
-end
-
--- The IDs of the Rex sessions that exist now, or nil when Rex can't say.
+-- The sessions (spaces) that exist now, or nil when any may.
 function M.live_sessions()
-  local ok, res = pcall(rex.call, "session.list", {})
-  if not ok or type(res) ~= "table" then
-    return nil
-  end
-  local live = {}
-  for _, s in ipairs(res.sessions or {}) do
-    live[s.session_id] = true
-  end
-  return live
+  return host.live_scopes()
 end
 
--- The session a PR's panes are in: the one its last round opened them in,
--- while that session exists, otherwise fallback (the watcher's). A saved ID
--- can outlive its session: when Rex restarts, reviewer_up makes a new
--- rex-reviewer session, and the old one's panes are gone with it.
+-- The session a PR's panes are in; see the host's scope.
 function M.pr_session(e, fallback, live)
-  if e.session_id and (live == nil or live[e.session_id]) then
-    return e.session_id
-  end
-  return fallback
+  return host.scope(e, fallback, live)
 end
 
 ---------------------------------------------------------------------------
@@ -205,6 +188,7 @@ function M.advance(session, log)
             log(string.format("%s round %d: the head moved while it waited; %s", label, e.round, rounds.follow_head(e, session, e.head)))
           else
             needs(attention, e, "ready", "the checked review is ready to post")
+            rounds.open_ask(e, session, log)
           end
         elseif phase == "checking" and st == "HEAD_MOVED" then
           local head = github.live_head(e.repo, e.pr)
@@ -223,32 +207,17 @@ function M.advance(session, log)
 end
 
 ---------------------------------------------------------------------------
--- The session and its watcher pane
+-- The watcher on its host
 
 function M.watch_script()
-  return config.ROOT .. "/scripts/watch.lua"
+  return host.watch_script()
 end
 
-local function watcher_loop()
-  return string.format(
-    'while :; do rex do "%s"; echo "watcher stopped ($?); restarting in 10s"; sleep 10; done',
-    M.watch_script()
-  )
-end
-
--- rex.call("session.set_block_label") from Lua returns without setting the
--- label, so this goes through the CLI.
-local function label_block(sid, bid, label)
-  rex_cli({ "api", "call", "session.set_block_label", util.json({ session_id = sid, block_id = bid, label = label }) })
-end
-
--- Make sure the session exists with a running watcher. Safe to run any time;
--- a LaunchAgent can run it every few minutes. With auto, a watcher stopped
--- with down stays stopped; a plain up starts it again. The session is found
--- by the ID in state.json, because agents in its panes can rename it.
+-- Make sure the watcher runs on the host. Safe to run any time; a
+-- LaunchAgent can run it every few minutes. With auto, a watcher stopped
+-- with down stays stopped; a plain up starts it again.
 function M.up(opts)
   opts = opts or {}
-  local label = config.load().session
   local st = ledger.load_state()
   if st.stopped and opts.auto then
     return { stopped = true, note = "stopped with reviewer_down; run reviewer_up to start it" }
@@ -260,95 +229,33 @@ function M.up(opts)
   end
   ledger.update_state(function(s)
     s.watch_script = M.watch_script()
+    s.host = host.name
   end)
-  local sessions = (rex.call("session.list", {}) or {}).sessions or {}
-  local sid
-  for _, s in ipairs(sessions) do
-    if st.session_id and s.session_id == st.session_id then
-      sid = s.session_id
-    end
-  end
-  if not sid then
-    for _, s in ipairs(sessions) do
-      if s.label == label then
-        sid = s.session_id
-      end
-    end
-  end
-  if not sid then
-    local j = util.decode(rex_cli({ "new", label, "--window", "control", "-c", util.HOME, "--json", "--", "/bin/sh", "-c", watcher_loop() }).stdout)
-    sid = j.session_id
-    local bid = j.initial_windows[1].block_ids[1]
-    label_block(sid, bid, "watcher")
-    ledger.update_state(function(s)
-      s.session_id = sid
-    end)
-    return { session_id = sid, watcher = bid, created = "session" }
-  end
-  if st.session_id ~= sid then
-    ledger.update_state(function(s)
-      s.session_id = sid
-    end)
-  end
-  rex_cli({ "session", "rename", sid, label })
-  local blocks = util.decode(rex_cli({ "block", "ls", "-s", sid, "--json" }).stdout).blocks or {}
-  for _, b in ipairs(blocks) do
-    if b.label == "watcher" then
-      local p = util.decode(rex_cli({ "block", "call", "-s", sid, "-b", b.block_id, "process" }).stdout) or {}
-      if p.child and p.last_exit == nil then
-        return { session_id = sid, watcher = b.block_id, created = false }
-      end
-      rex_cli({ "block", "close", "-s", sid, b.block_id })
-    end
-  end
-  local j = util.decode(rex_cli({ "window", "new", "-s", sid, "control", "-c", util.HOME, "--focus=false", "--json", "--", "/bin/sh", "-c", watcher_loop() }).stdout)
-  local bid = j.block_ids[1]
-  label_block(sid, bid, "watcher")
-  return { session_id = sid, watcher = bid, created = "watcher" }
+  local res = host.start_watcher()
+  res.host = host.name
+  return res
 end
 
 -- Stop the watcher until the next plain up. Review tabs stay open; their
 -- rounds carry on from where they are.
 function M.down()
-  local st = ledger.update_state(function(s)
+  ledger.update_state(function(s)
     s.stopped = true
   end)
   ledger.append_event({ kind = "stopped" })
-  local closed = {}
-  if st.session_id then
-    local ok, res = pcall(rex_cli, { "block", "ls", "-s", st.session_id, "--json" })
-    local blocks = ok and (util.decode(res.stdout) or {}).blocks or {}
-    for _, b in ipairs(blocks) do
-      if b.label == "watcher" then
-        rex_cli({ "block", "close", "-s", st.session_id, b.block_id })
-        closed[#closed + 1] = b.block_id
-      end
-    end
-  end
-  return { stopped = true, closed = closed }
+  return { stopped = true, closed = host.stop_watcher() }
 end
 
-local function block_window(sid, bid)
-  local blocks = util.decode(rex_cli({ "block", "ls", "-s", sid, "--json" }).stdout).blocks or {}
-  for _, b in ipairs(blocks) do
-    if b.block_id == bid or (bid == "watcher" and b.label == "watcher") then
-      return b.block_id, b.window_id
-    end
-  end
-end
-
--- Show a round in the Rex app, or the watcher with no PR: focus the pane,
--- then take the app to its session and tab. The app takes that only with
--- Remote Control on (Settings, Rex Server); without it, selected is false.
+-- Show a round in the host's app, or the watcher with no PR: the checker
+-- while it checks, else the first reviewer whose pane is open.
 function M.focus(repo, pr)
-  local st = ledger.load_state()
-  local sid, bid, wid
+  local sid, pane
   if pr then
     local e = ledger.load(repo, pr)
     if not e or e.state ~= "reviewing" then
       error(string.format("%s#%d has no round in progress", repo, pr), 0)
     end
-    sid = M.pr_session(e, st.session_id, M.live_sessions())
+    sid = M.pr_session(e, host.home_scope(), M.live_sessions())
     local names = {}
     for _, r in ipairs(rounds.round_reviewers(e)) do
       names[#names + 1] = r.pane
@@ -356,33 +263,32 @@ function M.focus(repo, pr)
     if e.checker_pane then
       table.insert(names, e.phase == "reviewer" and #names + 1 or 1, e.checker_pane)
     end
+    if e.ask_pane then
+      table.insert(names, 1, e.ask_pane)
+    end
     for i = 1, #names do
       local _, b = rounds.pane_state(sid, names[i])
       if b then
-        bid, wid = block_window(sid, b)
-        if bid then
-          break
-        end
+        pane = b
+        break
       end
     end
-    if not bid then
+    if not pane then
       error(string.format("%s#%d has no open tab", repo, pr), 0)
     end
   else
-    sid = st.session_id
-    if sid then
-      bid, wid = block_window(sid, "watcher")
-    end
-    if not bid then
-      error("the watcher isn't running; start it with reviewer_up", 0)
-    end
+    sid = host.home_scope()
+    pane = "watcher"
   end
-  rex_cli({ "focus", "-s", sid, bid })
-  local selected, err = pcall(rex_cli, { "do", "session.select", "session_id=" .. sid, "window_id=" .. wid })
-  return {
-    repo = repo, pr = pr, session_id = sid, block_id = bid, selected = selected,
-    note = not selected and tostring(err):match("Rex%.app is not accepting actions") and "remote control off" or nil,
-  }
+  local shown = sid and host.show(sid, pane)
+  if not shown then
+    if pr then
+      error(string.format("%s#%d has no open tab", repo, pr), 0)
+    end
+    error("the watcher isn't running; start it with reviewer_up", 0)
+  end
+  shown.repo, shown.pr = repo, pr
+  return shown
 end
 
 ---------------------------------------------------------------------------
@@ -409,7 +315,7 @@ function M.status()
   end
   local st = ledger.load_state()
   return {
-    stopped = st.stopped == true, paused = st.paused == true, post = config.load().post,
+    host = host.name, stopped = st.stopped == true, paused = st.paused == true, post = config.load().post,
     last_scan_at = st.last_scan_at, last_event = st.seq, prs = prs,
   }
 end
@@ -425,13 +331,18 @@ function M.doctor()
   if not ok then
     return { ok = false, checks = checks }
   end
-  local programs = { "rex", "gh", "git", "jq", "perl", "uuidgen" }
+  check("host", true, host.name)
+  for _, ch in ipairs(host.checks and host.checks() or {}) do
+    check(ch.check, ch.ok, ch.detail)
+  end
+  local programs = util.append(util.append({}, host.programs), { "gh", "git", "jq", "perl", "uuidgen" })
   local agents_used = { c.checker }
   for _, r in ipairs(c.reviewer_list) do
     agents_used[#agents_used + 1] = r.agent
   end
   for _, agent in ipairs(agents_used) do
-    programs[#programs + 1] = agent
+    local a = c.agents[agent] or {}
+    programs[#programs + 1] = a.program and util.expand(a.program) or agent
     if agent == "codex" then
       programs[#programs + 1] = "sqlite3"
     end

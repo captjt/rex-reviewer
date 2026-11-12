@@ -1,5 +1,5 @@
-5. Run `rex do reviewer_preview {{ACTION_ARGS}}` and read the preview. Then
-   run `rex do reviewer_post {{ACTION_ARGS}}`.
+5. Run `{{PREVIEW_CMD}}` and read the preview. Then
+   run `{{POST_CMD}}`.
    - Run each as the bare command, exactly as written, from this worktree:
      no `cd`, pipe, redirect, `;`, or `echo` around it. Only the bare
      commands are pre-approved.
