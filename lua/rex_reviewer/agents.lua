@@ -4,6 +4,7 @@
 
 local util = require("rex_reviewer.util")
 local config = require("rex_reviewer.config")
+local host = require("rex_reviewer.host")
 
 local M = {}
 
@@ -22,11 +23,13 @@ local function add_dirs(argv, dirs)
 end
 
 -- The adapter's own args, replaced by agents.<name>.args when set, plus
+-- what the host needs (Codex's --no-daemon on Herdr), plus
 -- agents.<name>.extra_args.
 local function args_for(name, defaults)
   local a = config.load().agents[name] or {}
   local out = {}
   util.append(out, a.args or defaults)
+  util.append(out, host.agent_args(name))
   util.append(out, a.extra_args)
   return out
 end
@@ -268,7 +271,7 @@ M.reviewers.claude = {
     local args = util.append(args_for("claude", self.defaults), extra)
     util.append(argv, with_effort("claude", args, r.effort))
     add_dirs(argv, dirs)
-    local label = string.format("rex-reviewer %s#%d", e.repo, e.pr)
+    local label = string.format("%s %s#%d", config.APP, e.repo, e.pr)
     if not r.primary then
       label = label .. " " .. r.name
     end
@@ -298,7 +301,7 @@ function M.byline(rs)
     end
   end
   if #names <= 1 then
-    return names[1] or "rex-reviewer"
+    return names[1] or config.APP
   end
   return table.concat(names, ", ", 1, #names - 1) .. " and " .. names[#names]
 end
@@ -310,7 +313,7 @@ end
 -- reviewers' worktrees, where their probes and builds are.
 
 local function checker_label(e)
-  return string.format("rex-reviewer %s#%d round %d check", e.repo, e.pr, e.round)
+  return string.format("%s %s#%d round %d check", config.APP, e.repo, e.pr, e.round)
 end
 
 M.checkers = {}
@@ -328,12 +331,12 @@ M.checkers.claude = {
     local args = util.append(args_for("claude", { "--permission-mode", "auto" }), c.checker_extra_args)
     util.append(argv, with_effort("claude", args, e.checker_effort))
     add_dirs(argv, dirs)
-    local allowed = { "Bash(rex do reviewer_preview:*)" }
-    local denied = { "Bash(rex do reviewer_dismiss:*)" }
+    local allowed = { host.allow("reviewer_preview") }
+    local denied = { host.allow("reviewer_dismiss") }
     if c.post == "auto" then
-      allowed[#allowed + 1] = "Bash(rex do reviewer_post:*)"
+      allowed[#allowed + 1] = host.allow("reviewer_post")
     else
-      denied[#denied + 1] = "Bash(rex do reviewer_post:*)"
+      denied[#denied + 1] = host.allow("reviewer_post")
     end
     argv[#argv + 1] = "--allowedTools"
     util.append(argv, allowed)
@@ -352,8 +355,9 @@ M.checkers.claude = {
   end,
 }
 
--- Codex: the reviewers' flags, plus network in the sandbox, which the rex
--- CLI needs to reach the Rex server's socket for preview and post. Codex
+-- Codex: the reviewers' flags, plus network in the sandbox, which preview
+-- and post need: the rex CLI reaches the Rex server's socket, and on Herdr
+-- the action runs here and calls GitHub. Codex
 -- can't deny one command per session; rounds.post holds the review with
 -- post = "ask" instead. Its thread is found by cwd, like a reviewer's; the
 -- primary's thread in the same worktree is older than since.

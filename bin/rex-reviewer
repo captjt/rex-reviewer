@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# rex-reviewer: set up rex-reviewer, and run its actions from a shell.
+# rex-reviewer: set up rex-reviewer, and run its actions from a shell. The
+# actions run in Rex (`rex do`) or, with host = "herdr" in the config, under
+# LuaJIT (scripts/cli.lua).
 set -euo pipefail
 
 # The checkout this script lives in, following symlinks.
@@ -17,10 +19,11 @@ agent_plist="$HOME/Library/LaunchAgents/$agent_label.plist"
 
 usage() {
 	cat <<EOF
-rex-reviewer: agent PR reviews in Rex.
+rex-reviewer: agent PR reviews in Rex or Herdr.
 
 Setup:
   rex-reviewer setup           create the config, and show the line for Rex's init.lua
+  rex-reviewer host            the host in the config: rex or herdr
   rex-reviewer doctor          check the config, the tools, and the repos
   rex-reviewer launch-agent    keep the watcher running: start it at login and
                                repair it every 5 minutes (--remove to undo)
@@ -41,10 +44,14 @@ A round (add a repo as owner/name when more than one is configured):
   rex-reviewer preview PR [REPO]   render the checked review
   rex-reviewer post PR [REPO]      post it
   rex-reviewer dismiss PR [REPO]   end the round without posting
-  rex-reviewer focus PR [REPO]     show its tab in the Rex app
+  rex-reviewer focus PR [REPO]     show its tab in the Rex or Herdr app
   rex-reviewer pickup PR [REPO]    review a PR that didn't request you
   rex-reviewer replay PR [REPO]    what the rules would have done on its history
   rex-reviewer start PR [REPO]     start its next round now (after reviewer_prep)
+
+Any action, by name:
+  rex-reviewer do ACTION [key=value ...] [--json]
+                                   such as: do reviewer_post item=pr/acme/api/12/2
 
 The checkout: $root
 EOF
@@ -66,9 +73,28 @@ pr_args() {
 	[[ -z ${2:-} ]] || args+=("repo=$2")
 }
 
+need_luajit() {
+	command -v luajit >/dev/null || die "luajit isn't on PATH. On Herdr, rex-reviewer runs under LuaJIT: brew install luajit."
+}
+
+# The host in the config. Reading it takes LuaJIT; without it, Rex.
+host() {
+	if command -v luajit >/dev/null; then
+		luajit "$root/scripts/cli.lua" --host 2>/dev/null || echo rex
+	else
+		echo rex
+	fi
+}
+
+# Run an action, or a script with key=value args, on the config's host.
 act() {
-	need_rex
-	rex 'do' "$@"
+	if [[ $(host) == herdr ]]; then
+		need_luajit
+		luajit "$root/scripts/cli.lua" "$@"
+	else
+		need_rex
+		rex 'do' "$@"
+	fi
 }
 
 setup() {
@@ -78,6 +104,12 @@ setup() {
 	else
 		cp "$root/examples/config.lua" "$config_dir/config.lua"
 		echo "config: created $config_dir/config.lua from the example. Add your repos to it."
+	fi
+	if [[ $(host) == herdr ]]; then
+		echo
+		echo "host = \"herdr\" in the config: the actions run under LuaJIT, and nothing loads in Rex."
+		echo "Then: rex-reviewer doctor, and rex-reviewer up."
+		return
 	fi
 	local line="dofile(\"$root/init.lua\")"
 	local init="$HOME/.config/rex/init.lua"
@@ -94,9 +126,13 @@ setup() {
 }
 
 doctor() {
-	need_rex
 	local out
-	out=$(rex 'do' reviewer_doctor --json) || die "reviewer_doctor failed. Is rex-reviewer loaded from init.lua? Run rex-reviewer setup."
+	if [[ $(host) == herdr ]]; then
+		out=$(act reviewer_doctor --json) || die "reviewer_doctor failed."
+	else
+		need_rex
+		out=$(rex 'do' reviewer_doctor --json) || die "reviewer_doctor failed. Is rex-reviewer loaded from init.lua? Run rex-reviewer setup."
+	fi
 	jq -r '.checks[] | (if .ok then "ok   " else "FAIL " end) + .check + ": " + (.detail // "")' <<<"$out"
 	jq -e .ok <<<"$out" >/dev/null
 }
@@ -108,9 +144,25 @@ launch_agent() {
 		echo "removed $agent_plist"
 		return
 	fi
-	need_rex
-	local rex_bin
-	rex_bin=$(command -v rex)
+	local -a program
+	local path_env=""
+	if [[ $(host) == herdr ]]; then
+		need_luajit
+		program=("$root/bin/rex-reviewer" up --auto)
+		path_env="  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>"
+	else
+		need_rex
+		program=("$(command -v rex)" do reviewer_up auto=true)
+	fi
+	local args="" a
+	for a in "${program[@]}"; do
+		args+="    <string>$a</string>
+"
+	done
 	mkdir -p "$(dirname "$agent_plist")" "$HOME/Library/Logs"
 	cat >"$agent_plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -121,11 +173,8 @@ launch_agent() {
   <string>$agent_label</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$rex_bin</string>
-    <string>do</string>
-    <string>reviewer_up</string>
-    <string>auto=true</string>
-  </array>
+$args  </array>
+$path_env
   <key>RunAtLoad</key>
   <true/>
   <key>StartInterval</key>
@@ -154,7 +203,9 @@ app)
 		"$HOME/Applications/Rex Reviewer.app/Contents/MacOS/RexReviewer" --open-at-login on
 	fi
 	;;
-up) act reviewer_up ;;
+up)
+	if [[ ${1:-} == --auto ]]; then act reviewer_up auto=true; else act reviewer_up; fi
+	;;
 down) act reviewer_down ;;
 pause) act reviewer_pause ;;
 resume) act reviewer_resume ;;
@@ -173,6 +224,17 @@ start | replay)
 	pr_args "$@"
 	act "$root/scripts/$cmd.lua" "${args[@]}"
 	;;
+do)
+	[[ $# -gt 0 ]] || die "give an action, such as: do reviewer_status"
+	act "$@"
+	;;
+request)
+	# What an agent on Herdr runs, from a round's worktree: the watcher runs
+	# the action for it. See lua/rex_reviewer/requests.lua.
+	need_luajit
+	PWD=$(pwd) luajit "$root/scripts/cli.lua" --request "$@"
+	;;
+host) host ;;
 backfill-tokens) act "$root/scripts/backfill-tokens.lua" "$@" | jq . ;;
 help | -h | --help) usage ;;
 *)

@@ -25,13 +25,16 @@ local ledger = require("rex_reviewer.ledger")
 local rules = require("rex_reviewer.rules")
 local github = require("rex_reviewer.github")
 local agents = require("rex_reviewer.agents")
+local host = require("rex_reviewer.host")
 
 local M = {}
 
 local HOME = util.HOME
 
+-- The host's agent driver (bin/rex-agent or bin/hc-agent) with args. Both
+-- take the same commands and give the same JSON and exit codes.
 local function rex_agent(args)
-  local argv = { config.ROOT .. "/bin/rex-agent" }
+  local argv = { host.driver() }
   return util.append(argv, args)
 end
 
@@ -264,6 +267,10 @@ function M.vars(e, round, r)
   v.MERGE_RISK_GUIDE = risk or ""
   v.CHECK_GUIDE = section("More instructions", repo and config.guide(repo, "check", e))
   v.ACTION_ARGS = string.format("repo=%s pr=%d", e.repo, e.pr)
+  -- The commands the checker runs, as the host has them: on Rex,
+  -- `rex do reviewer_preview repo=… pr=…`.
+  v.PREVIEW_CMD = host.action_cmd("reviewer_preview", v.ACTION_ARGS)
+  v.POST_CMD = host.action_cmd("reviewer_post", v.ACTION_ARGS)
   v.MERGE_RISK_START = risk and util.render(brief("parts/merge-risk-start.md"), v) or ""
   v.MERGE_RISK_ADD = risk and util.render(brief("parts/merge-risk-add.md"), v) or ""
   v.POST_STEP = util.render(brief(c.post == "auto" and "parts/post-auto.md" or "parts/post-ask.md"), v)
@@ -586,7 +593,7 @@ function M.start(repo, pr, session)
     error(string.format("%s: run reviewer_prep for round %d first", ledger.label(e), round), 0)
   end
   if not session then
-    error("start needs a Rex session; run scripts/start.lua with rex do", 0)
+    error("start needs the session to open the round in; run reviewer_up first", 0)
   end
   local rs = M.round_reviewers(e)
   for _, r in ipairs(rs) do
@@ -823,6 +830,7 @@ function M.follow_head(e, session, head)
   local same = M.same_pr_diff(e, e.round_head, head)
   local r = M.prep(e.repo, e.pr)
   e = ledger.load(e.repo, e.pr)
+  M.close_ask(e, session)
   if same then
     ledger.append_event({ kind = "repointed", repo = e.repo, pr = e.pr, round = e.round, head = e.round_head, from = r.moved_from })
     M.start_checker(e, session)
@@ -1024,10 +1032,42 @@ end
 ---------------------------------------------------------------------------
 -- Closing panes, and cleanup after a merge or close
 
--- Close the checker's pane and every reviewer's.
+-- A round waiting for you, on a host with a post terminal (Herdr): open it
+-- beside the round's panes, once. Errors are logged, not raised: the round
+-- still waits, and the menu bar and the CLI can still post it.
+function M.open_ask(e, session, log)
+  if not host.open_ask or e.ask_pane then
+    return
+  end
+  local ok, res = pcall(host.open_ask, e, session)
+  if not ok then
+    if log then
+      log(string.format("%s round %d: %s", ledger.label(e), e.round, tostring(res)))
+    end
+    return
+  end
+  e = ledger.load(e.repo, e.pr)
+  e.ask_pane = res
+  ledger.save(e)
+end
+
+-- Close the round's post terminal, if it has one.
+function M.close_ask(e, session)
+  if e.ask_pane then
+    M.close_pane(session, e.ask_pane)
+    e.ask_pane = nil
+    ledger.save(e)
+  end
+end
+
+-- Close the post terminal, the checker's pane, and every reviewer's.
 function M.close_panes(e, session)
   if not session then
     return
+  end
+  if e.ask_pane then
+    M.close_pane(session, e.ask_pane)
+    e.ask_pane = nil
   end
   M.close_pane(session, e.checker_pane)
   local seen = {}
