@@ -5,6 +5,14 @@
 -- post = "ask" nothing posts until you approve it.
 
 return {
+  -- Where the panes run: "rex", or "herdr" for herdr-core with the Herdr app
+  -- and phone app. On Herdr, the actions run under LuaJIT instead of Rex.
+  -- See docs/hosts.md, which also says how to switch.
+  host = "rex",
+  -- The Rex session the watcher and the review tabs open in, or on Herdr the
+  -- space (lowercase letters, digits, dots, dashes; up to 24).
+  -- session = "rex-reviewer",
+
   repos = {
     ["your-org/your-repo"] = {
       -- A clone whose origin is the repo. Worktrees for each PR hang off it.
