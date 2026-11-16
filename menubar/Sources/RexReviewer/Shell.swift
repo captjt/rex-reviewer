@@ -2,6 +2,8 @@ import Foundation
 
 enum Shell {
     struct Result: Sendable {
+        /// What ran: the program and its arguments.
+        let command: [String]
         let status: Int32
         let output: String
         let error: String
@@ -12,6 +14,28 @@ enum Shell {
             let line = text.split(separator: "\n").first.map(String.init) ?? "failed with status \(status)"
             return line.hasPrefix("Error: ") ? String(line.dropFirst(7)) : line
         }
+
+        /// Everything about a failure, for a bug report: the command, its
+        /// exit status, and all it printed. Rex lists the candidates of an
+        /// ambiguous target on the lines after the first, which failure drops.
+        var report: String {
+            var lines = [
+                "command: " + command.map(Shell.quote).joined(separator: " "),
+                "status: \(status)",
+            ]
+            let err = error.trimmingCharacters(in: .whitespacesAndNewlines)
+            let out = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !err.isEmpty { lines.append("stderr:\n" + err) }
+            if !out.isEmpty { lines.append("stdout:\n" + out) }
+            return lines.joined(separator: "\n")
+        }
+    }
+
+    /// An argument as a shell would need it, quoted only when it has to be.
+    static func quote(_ arg: String) -> String {
+        let plain = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_./:=@%+,"))
+        if !arg.isEmpty, arg.unicodeScalars.allSatisfy(plain.contains) { return arg }
+        return "'" + arg.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     /// util.lua's M.PATH. An app opened from Finder gets only the system
@@ -42,15 +66,17 @@ enum Shell {
         let err = Pipe()
         process.standardOutput = out
         process.standardError = err
+        let command = [executable] + arguments
         do {
             try process.run()
         } catch {
-            return Result(status: -1, output: "", error: error.localizedDescription)
+            return Result(command: command, status: -1, output: "", error: error.localizedDescription)
         }
         let output = out.fileHandleForReading.readDataToEndOfFile()
         let errors = err.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         return Result(
+            command: command,
             status: process.terminationStatus,
             output: String(decoding: output, as: UTF8.self),
             error: String(decoding: errors, as: UTF8.self)

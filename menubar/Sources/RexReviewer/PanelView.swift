@@ -48,13 +48,21 @@ struct PanelView: View {
                 }
                 if let message = store.message {
                     Divider()
-                    Label(message, systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .lineLimit(3)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 6)
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Label(message, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.red)
+                            .lineLimit(3)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button("Copy") { store.copyMessage() }
+                            .buttonStyle(.link)
+                            .help(store.messageDetail == nil
+                                ? "Copy the error"
+                                : "Copy the error in full: the command, its status, and all it printed")
+                    }
+                    .font(.caption)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
                 }
                 Divider()
                 FooterView(store: store)

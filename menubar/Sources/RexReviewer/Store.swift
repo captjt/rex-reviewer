@@ -25,7 +25,12 @@ final class Store {
     var badgeMode = BadgeMode(rawValue: UserDefaults.standard.string(forKey: "badgeMode") ?? "") ?? .automatic {
         didSet { UserDefaults.standard.set(badgeMode.rawValue, forKey: "badgeMode") }
     }
-    var message: String?
+    var message: String? {
+        didSet { messageDetail = nil }
+    }
+    /// The full report behind message, when an action failed: what Copy
+    /// puts on the clipboard.
+    private(set) var messageDetail: String?
 
     @ObservationIgnored private var streams: [FSEventStreamRef] = []
     @ObservationIgnored private var ticker: Task<Void, Never>?
@@ -258,7 +263,11 @@ final class Store {
         let root = state.root
         let result = await Task.detached { Shell.action(root: root, arguments + ["--json"]) }.value
         pending.remove(key)
-        if result.status != 0 { message = result.failure }
+        if result.status != 0 {
+            message = result.failure
+            messageDetail = result.report
+            Self.logFailure(result.report)
+        }
         reload()
         await checkWatcherProcess()
         return result.status == 0 ? result : nil
@@ -335,6 +344,31 @@ final class Store {
         guard let link else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(link, forType: .string)
+    }
+
+    /// Copy the error under the list, in full when an action failed.
+    func copyMessage() {
+        copy(messageDetail ?? message)
+    }
+
+    /// Append a failed action's report to Paths.failureLog, starting the
+    /// file over past 256 KB.
+    private static func logFailure(_ report: String) {
+        let path = Paths.failureLog
+        let fm = FileManager.default
+        if let size = (try? fm.attributesOfItem(atPath: path))?[.size] as? Int, size > 256 * 1024 {
+            try? fm.removeItem(atPath: path)
+        }
+        let stamp = Date().formatted(.iso8601)
+        guard let data = "\(stamp)\n\(report)\n\n".data(using: .utf8) else { return }
+        if let handle = FileHandle(forWritingAtPath: path) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+        } else {
+            try? fm.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+            fm.createFile(atPath: path, contents: data)
+        }
     }
 
     // MARK: Login item

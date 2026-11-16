@@ -6,6 +6,8 @@ enum Paths {
         ?? NSHomeDirectory() + "/.local/state/rex-reviewer"
     static let reposDir = stateDir + "/repos"
     static let checkNow = stateDir + "/check-now"
+    /// Failed actions, in full. Outside stateDir, which the app watches.
+    static let failureLog = NSHomeDirectory() + "/Library/Logs/rex-reviewer-menubar.log"
 
     /// rex-inbox's hub, when it runs: the same paths rex-inbox uses.
     static let inboxSocket: String = {
