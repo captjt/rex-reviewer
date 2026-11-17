@@ -22,6 +22,19 @@ local function add_dirs(argv, dirs)
   return argv
 end
 
+-- Claude Code (2.1.326 on) shows its folder trust prompt for each --add-dir
+-- folder you haven't trusted, every session, so the caches would stop each
+-- reviewer at startup. They go in the additionalDirectories setting
+-- instead, which lets the file tools use them without loading anything from
+-- them (settings, skills, hooks). Worktrees and git metadata stay --add-dir:
+-- they belong to a repo you trusted, so they don't prompt.
+local function claude_caches(argv, caches)
+  if caches and #caches > 0 then
+    util.append(argv, { "--settings", util.json({ permissions = { additionalDirectories = caches } }) })
+  end
+  return argv
+end
+
 -- The program to run for an agent: agents.<name>.program, a name on PATH
 -- or a path, when set; else its own name.
 function M.program(name)
@@ -215,7 +228,8 @@ end
 -- Reviewers: one agent per reviewer in the config, resumed every round. An
 -- adapter works on the reviewer's record r in the ledger entry's reviewers:
 -- its worktree, pane, session, and the round's effort level (r.effort, nil
--- for the agent's own). extra is the reviewer's own extra_args.
+-- for the agent's own). dirs are git's worktree metadata, caches the shared
+-- caches, and extra the reviewer's own extra_args.
 
 M.reviewers = {}
 
@@ -230,7 +244,7 @@ M.reviewers.codex = {
     "--disable", "apps",
     "-c", 'plugins."github@openai-curated".enabled=false',
   },
-  command = function(self, _, r, dirs, extra)
+  command = function(self, _, r, dirs, caches, extra)
     local argv = { M.program("codex") }
     if r.session then
       util.append(argv, { "resume", r.session })
@@ -238,6 +252,7 @@ M.reviewers.codex = {
     local args = util.append(args_for("codex", self.defaults), extra)
     util.append(argv, with_effort("codex", args, r.effort))
     add_dirs(argv, dirs)
+    add_dirs(argv, caches)
     return util.append(argv, { "-C", r.worktree })
   end,
   -- Codex names its thread after the first prompt; find it by cwd. Each
@@ -267,7 +282,7 @@ M.reviewers.codex = {
 M.reviewers.claude = {
   program = "claude",
   defaults = { "--permission-mode", "auto" },
-  command = function(self, e, r, dirs, extra)
+  command = function(self, e, r, dirs, caches, extra)
     local argv = { M.program("claude") }
     if r.session then
       util.append(argv, { "--resume", r.session })
@@ -278,6 +293,7 @@ M.reviewers.claude = {
     local args = util.append(args_for("claude", self.defaults), extra)
     util.append(argv, with_effort("claude", args, r.effort))
     add_dirs(argv, dirs)
+    claude_caches(argv, caches)
     local label = string.format("%s %s#%d", config.APP, e.repo, e.pr)
     if not r.primary then
       label = label .. " " .. r.name

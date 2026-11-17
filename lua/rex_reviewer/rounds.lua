@@ -518,19 +518,24 @@ end
 ---------------------------------------------------------------------------
 -- Agents
 
--- Shared caches the agents may write to, and git's worktree metadata, so
--- git in the worktree can update its index.
+-- The folders the agents may write to besides their worktree, the ones
+-- that exist: git's worktree metadata, so git in the worktree can update
+-- its index, and the shared caches. They come back as two lists, since
+-- Claude Code takes the caches another way (see agents.lua).
 local function writable_dirs(e)
   local c = config.load()
-  local out = {}
-  local dirs = { c.repos[e.repo].checkout .. "/.git/worktrees", config.CACHE_DIR }
-  util.append(dirs, c.caches)
-  for _, d in ipairs(dirs) do
-    if util.exists(d) then
-      out[#out + 1] = d
+  local function existing(list)
+    local out = {}
+    for _, d in ipairs(list) do
+      if util.exists(d) then
+        out[#out + 1] = d
+      end
     end
+    return out
   end
-  return out
+  local caches = { config.CACHE_DIR }
+  util.append(caches, c.caches)
+  return existing({ c.repos[e.repo].checkout .. "/.git/worktrees" }), existing(caches)
 end
 
 -- Cargo's home also holds installed binaries, so agents get a small
@@ -593,7 +598,8 @@ local function open_reviewer(e, r, session, prompt, anchor)
   argv[#argv + 1] = "--"
   util.append(argv, env_args(r.worktree))
   local since = os.time()
-  util.append(argv, adapter:command(e, r, writable_dirs(e), own and own.extra_args or {}))
+  local dirs, caches = writable_dirs(e)
+  util.append(argv, adapter:command(e, r, dirs, caches, own and own.extra_args or {}))
   local res = util.run(argv, { check = false })
   if not res.ok then
     M.close_pane(session, r.pane)

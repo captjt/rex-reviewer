@@ -242,7 +242,10 @@ add an adapter to [`lua/rex_reviewer/agents.lua`](lua/rex_reviewer/agents.lua).
 
 - Each PR gets its own git worktree for each reviewer, detached at the PR's
   head. Agents may build and test there, and write to your package caches,
-  but not commit or push.
+  but not commit or push. Claude Code gets the caches through its
+  `additionalDirectories` setting, not `--add-dir`, which from 2.1.326
+  stops each session at a trust prompt for every folder you haven't
+  trusted.
 - `gh` is signed out in the agents' panes, so they can't reach GitHub. The
   posting script runs as an action outside their sandbox: the Rex server
   runs it in Rex, and the watcher on Herdr.
